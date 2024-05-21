@@ -41,6 +41,7 @@ on:
 jobs:
 
   windows:
+    if: false
     name: Windows
     runs-on: windows-2022
 

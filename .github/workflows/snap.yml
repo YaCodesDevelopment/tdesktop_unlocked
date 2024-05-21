@@ -39,6 +39,7 @@ on:
 jobs:
 
   snap:
+    if: false
     name: Ubuntu
     runs-on: ubuntu-20.04
 

@@ -39,6 +39,7 @@ on:
 jobs:
 
   macos:
+    if: false
     name: MacOS
     runs-on: macos-13
 

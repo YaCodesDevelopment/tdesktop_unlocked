@@ -205,6 +205,7 @@ RepliesWidget::RepliesWidget(
 	not_null<History*> history,
 	MsgId rootId)
 : Window::SectionWidget(parent, controller, history->peer)
+, WindowListDelegate(controller)
 , _history(history)
 , _rootId(rootId)
 , _root(lookupRoot())
@@ -299,7 +300,7 @@ RepliesWidget::RepliesWidget(
 
 	_inner = _scroll->setOwnedWidget(object_ptr<ListWidget>(
 		this,
-		controller,
+		&controller->session(),
 		static_cast<ListDelegate*>(this)));
 	_scroll->move(0, _topBar->height());
 	_scroll->show();
@@ -323,14 +324,15 @@ RepliesWidget::RepliesWidget(
 	}, _inner->lifetime());
 
 	_inner->replyToMessageRequested(
-	) | rpl::start_with_next([=](auto fullId) {
+	) | rpl::start_with_next([=](ListWidget::ReplyToMessageRequest request) {
 		const auto canSendReply = _topic
 			? Data::CanSendAnything(_topic)
 			: Data::CanSendAnything(_history->peer);
-		if (_joinGroup || !canSendReply) {
-			Controls::ShowReplyToChatBox(controller->uiShow(), { fullId });
+		const auto &to = request.to;
+		if (_joinGroup || !canSendReply || request.forceAnotherChat) {
+			Controls::ShowReplyToChatBox(controller->uiShow(), { to });
 		} else {
-			replyToMessage(fullId);
+			replyToMessage(to);
 			_composeControls->focus();
 		}
 	}, _inner->lifetime());

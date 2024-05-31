@@ -332,6 +332,11 @@ InnerWidget::InnerWidget(
 		switchToFilter(filterId);
 	}, lifetime());
 
+	_controller->window().widget()->globalForceClicks(
+	) | rpl::start_with_next([=](QPoint globalPosition) {
+		processGlobalForceClick(globalPosition);
+	}, lifetime());
+
 	session().data().stories().incrementPreloadingMainSources();
 
 	handleChatListEntryRefreshes();
@@ -1424,6 +1429,29 @@ void InnerWidget::selectByMouse(QPoint globalPosition) {
 	}
 }
 
+Key InnerWidget::computeChatPreviewRow() const {
+	auto result = computeChosenRow().key;
+	if (const auto peer = result.peer()) {
+		const auto topicId = _pressedTopicJump
+			? _pressedTopicJumpRootId
+			: 0;
+		if (const auto topic = peer->forumTopicFor(topicId)) {
+			return topic;
+		}
+	}
+	return result;
+}
+
+void InnerWidget::processGlobalForceClick(QPoint globalPosition) {
+	const auto parent = parentWidget();
+	if (_pressButton == Qt::LeftButton
+		&& parent->rect().contains(parent->mapFromGlobal(globalPosition))
+		&& pressShowsPreview(false)) {
+		_chatPreviewWillBeFor = computeChatPreviewRow();
+		showChatPreview(false);
+	}
+}
+
 void InnerWidget::mousePressEvent(QMouseEvent *e) {
 	selectByMouse(e->globalPos());
 
@@ -1439,7 +1467,7 @@ void InnerWidget::mousePressEvent(QMouseEvent *e) {
 	const auto alt = (e->modifiers() & Qt::AltModifier);
 	const auto onlyUserpic = !alt;
 	if (pressShowsPreview(onlyUserpic)) {
-		_chatPreviewWillBeFor = computeChosenRow().key;
+		_chatPreviewWillBeFor = computeChatPreviewRow();
 		if (alt) {
 			showChatPreview(onlyUserpic);
 			return;
@@ -1761,6 +1789,7 @@ void InnerWidget::mousePressReleased(
 		Qt::MouseButton button,
 		Qt::KeyboardModifiers modifiers) {
 	_chatPreviewTimer.cancel();
+	_pressButton = Qt::NoButton;
 
 	auto wasDragging = (_dragging != nullptr);
 	if (wasDragging) {
@@ -2321,7 +2350,7 @@ void InnerWidget::fillArchiveSearchMenu(not_null<Ui::PopupMenu*> menu) {
 void InnerWidget::showChatPreview(bool onlyUserpic) {
 	const auto key = base::take(_chatPreviewWillBeFor);
 	cancelChatPreview();
-	if (!pressShowsPreview(onlyUserpic) || key != computeChosenRow().key) {
+	if (!pressShowsPreview(onlyUserpic) || key != computeChatPreviewRow()) {
 		return;
 	}
 	ClickHandler::unpressed();
@@ -3598,8 +3627,11 @@ ChosenRow InnerWidget::computeChosenRow() const {
 
 bool InnerWidget::isUserpicPress() const {
 	return  (_lastRowLocalMouseX >= 0)
-		&& (_lastRowLocalMouseX < _st->nameLeft)
-		&& (width() > _narrowWidth);
+		&& (_lastRowLocalMouseX < _st->nameLeft);
+}
+
+bool InnerWidget::isUserpicPressOnWide() const {
+	return isUserpicPress() && (width() > _narrowWidth);
 }
 
 bool InnerWidget::pressShowsPreview(bool onlyUserpic) const {
@@ -3608,7 +3640,8 @@ bool InnerWidget::pressShowsPreview(bool onlyUserpic) const {
 	}
 	const auto key = computeChosenRow().key;
 	if (const auto history = key.history()) {
-		return !history->peer->isForum();
+		return !history->peer->isForum()
+			|| (_pressedTopicJump && _pressedTopicJumpRootId);
 	}
 	return key.topic() != nullptr;
 }
@@ -3625,7 +3658,7 @@ bool InnerWidget::chooseRow(
 			ChosenRow row,
 			Qt::KeyboardModifiers modifiers) {
 		row.newWindow = (modifiers & Qt::ControlModifier);
-		row.userpicClick = isUserpicPress();
+		row.userpicClick = isUserpicPressOnWide();
 		return row;
 	};
 	auto chosen = modifyChosenRow(computeChosenRow(), modifiers);
@@ -3964,7 +3997,8 @@ void InnerWidget::setupShortcuts() {
 		return isActiveWindow()
 			&& !_controller->isLayerShown()
 			&& !_controller->window().locked()
-			&& !_childListShown.current().shown;
+			&& !_childListShown.current().shown
+			&& !_chatPreviewKey;
 	}) | rpl::start_with_next([=](not_null<Shortcuts::Request*> request) {
 		using Command = Shortcuts::Command;
 
@@ -3996,6 +4030,12 @@ void InnerWidget::setupShortcuts() {
 			});
 			request->check(Command::ChatNext) && request->handle([=] {
 				return jumpToDialogRow(next);
+			});
+		} else if (_state == WidgetState::Default
+			? !_shownList->empty()
+			: !_filterResults.empty()) {
+			request->check(Command::ChatNext) && request->handle([=] {
+				return jumpToDialogRow(first);
 			});
 		}
 		request->check(Command::ChatFirst) && request->handle([=] {

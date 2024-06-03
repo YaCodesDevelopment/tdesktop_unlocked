@@ -240,9 +240,8 @@ private:
 		not_null<HistoryItem*> item,
 		Api::SendOptions options,
 		mtpRequestId *const saveEditMsgRequestId,
-		std::optional<bool> spoilerMediaOverride);
+		bool spoilered);
 	void chooseAttach(std::optional<bool> overrideSendImagesAsPhotos);
-	[[nodiscard]] SendMenu::Type sendMenuType() const;
 	[[nodiscard]] FullReplyTo replyTo() const;
 	void doSetInnerFocus();
 	void showAtPosition(
@@ -676,7 +675,7 @@ void ShortcutMessages::setupComposeControls() {
 	) | rpl::start_with_next([=](auto data) {
 		if (const auto item = _session->data().message(data.fullId)) {
 			if (item->isBusinessShortcut()) {
-				const auto spoiler = data.spoilerMediaOverride;
+				const auto spoiler = data.spoilered;
 				edit(item, data.options, saveEditMsgRequestId, spoiler);
 			}
 		}
@@ -792,7 +791,7 @@ QPointer<Ui::RpWidget> ShortcutMessages::createPinnedToBottom(
 				listShowPremiumToast(emoji);
 			},
 			.mode = HistoryView::ComposeControlsMode::Normal,
-			.sendMenuType = SendMenu::Type::Disabled,
+			.sendMenuDetails = [] { return SendMenu::Details(); },
 			.regularWindow = _controller,
 			.stickerOrEmojiChosen = _controller->stickerOrEmojiChosen(),
 			.customPlaceholder = std::move(placeholder),
@@ -1222,7 +1221,7 @@ void ShortcutMessages::edit(
 		not_null<HistoryItem*> item,
 		Api::SendOptions options,
 		mtpRequestId *const saveEditMsgRequestId,
-		std::optional<bool> spoilerMediaOverride) {
+		bool spoilered) {
 	if (*saveEditMsgRequestId) {
 		return;
 	}
@@ -1291,7 +1290,7 @@ void ShortcutMessages::edit(
 		options,
 		crl::guard(this, done),
 		crl::guard(this, fail),
-		spoilerMediaOverride);
+		spoilered);
 
 	_composeControls->hidePanelsAnimated();
 	doSetInnerFocus();
@@ -1346,7 +1345,7 @@ bool ShortcutMessages::confirmSendingFiles(
 		_composeControls->getTextWithAppliedMarkdown(),
 		_history->peer,
 		Api::SendType::Normal,
-		SendMenu::Type::Disabled);
+		SendMenu::Details());
 
 	box->setConfirmedCallback(crl::guard(this, [=](
 			Ui::PreparedList &&list,
@@ -1543,12 +1542,6 @@ void ShortcutMessages::sendInlineResult(
 		return;
 	}
 	sendInlineResult(result, bot, {}, std::nullopt);
-	//const auto callback = [=](Api::SendOptions options) {
-	//	sendInlineResult(result, bot, options);
-	//};
-	//Ui::show(
-	//	PrepareScheduleBox(this, sendMenuType(), callback),
-	//	Ui::LayerOption::KeepOther);
 }
 
 void ShortcutMessages::sendInlineResult(

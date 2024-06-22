@@ -351,6 +351,20 @@ MainWindow::MainWindow(not_null<Controller*> controller)
 		Ui::Toast::SetDefaultParent(_body.data());
 	}
 
+	windowActiveValue(
+	) | rpl::skip(1) | rpl::start_with_next([=](bool active) {
+		InvokeQueued(this, [=] {
+			handleActiveChanged(active);
+		});
+	}, lifetime());
+
+	shownValue(
+	) | rpl::skip(1) | rpl::start_with_next([=](bool visible) {
+		InvokeQueued(this, [=] {
+			handleVisibleChanged(visible);
+		});
+	}, lifetime());
+
 	body()->sizeValue(
 	) | rpl::start_with_next([=](QSize size) {
 		updateControlsGeometry();
@@ -441,27 +455,7 @@ QRect MainWindow::desktopRect() const {
 }
 
 void MainWindow::init() {
-	createWinId();
-
 	initHook();
-
-	// Non-queued activeChanged handlers must use QtSignalProducer.
-	connect(
-		windowHandle(),
-		&QWindow::activeChanged,
-		this,
-		[=] { handleActiveChanged(); },
-		Qt::QueuedConnection);
-	connect(
-		windowHandle(),
-		&QWindow::windowStateChanged,
-		this,
-		[=](Qt::WindowState state) { handleStateChanged(state); });
-	connect(
-		windowHandle(),
-		&QWindow::visibleChanged,
-		this,
-		[=](bool visible) { handleVisibleChanged(visible); });
 
 	updatePalette();
 
@@ -495,9 +489,9 @@ void MainWindow::handleStateChanged(Qt::WindowState state) {
 	savePosition(state);
 }
 
-void MainWindow::handleActiveChanged() {
+void MainWindow::handleActiveChanged(bool active) {
 	checkActivation();
-	if (isActiveWindow()) {
+	if (active) {
 		Core::App().windowActivated(&controller());
 	}
 	if (const auto controller = sessionController()) {

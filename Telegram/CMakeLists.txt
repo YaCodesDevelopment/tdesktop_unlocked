@@ -126,6 +126,7 @@ PRIVATE
     api/api_earn.h
     api/api_editing.cpp
     api/api_editing.h
+    api/api_filter_updates.h
     api/api_global_privacy.cpp
     api/api_global_privacy.h
     api/api_hash.cpp
@@ -164,6 +165,10 @@ PRIVATE
     api/api_single_message_search.h
     api/api_statistics.cpp
     api/api_statistics.h
+    api/api_statistics_data_deserialize.cpp
+    api/api_statistics_data_deserialize.h
+    api/api_statistics_sender.cpp
+    api/api_statistics_sender.h
     api/api_text_entities.cpp
     api/api_text_entities.h
     api/api_toggling_media.cpp
@@ -722,8 +727,6 @@ PRIVATE
     history/view/media/history_view_dice.h
     history/view/media/history_view_document.cpp
     history/view/media/history_view_document.h
-    history/view/media/history_view_extended_preview.cpp
-    history/view/media/history_view_extended_preview.h
     history/view/media/history_view_file.cpp
     history/view/media/history_view_file.h
     history/view/media/history_view_game.cpp
@@ -887,6 +890,10 @@ PRIVATE
     history/history_view_highlight_manager.h
     history/history_widget.cpp
     history/history_widget.h
+    info/bot/earn/info_earn_inner_widget.cpp
+    info/bot/earn/info_earn_inner_widget.h
+    info/bot/earn/info_earn_widget.cpp
+    info/bot/earn/info_earn_widget.h
     info/channel_statistics/boosts/create_giveaway_box.cpp
     info/channel_statistics/boosts/create_giveaway_box.h
     info/channel_statistics/boosts/giveaway/giveaway_list_controllers.cpp
@@ -1539,6 +1546,8 @@ PRIVATE
     window/window_peer_menu.cpp
     window/window_peer_menu.h
     window/window_section_common.h
+    window/window_separate_id.cpp
+    window/window_separate_id.h
     window/window_session_controller.cpp
     window/window_session_controller.h
     window/window_session_controller_link_info.h

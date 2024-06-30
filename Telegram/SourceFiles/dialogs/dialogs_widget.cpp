@@ -562,6 +562,8 @@ void Widget::chosenRow(const ChosenRow &row) {
 	if (topicJump) {
 		if (controller()->shownForum().current() == topicJump->forum()) {
 			controller()->closeForum();
+		} else if (row.newWindow) {
+			controller()->showInNewWindow(Window::SeparateId(topicJump));
 		} else {
 			if (!controller()->adaptive().isOneColumn()) {
 				controller()->showForum(
@@ -575,11 +577,17 @@ void Widget::chosenRow(const ChosenRow &row) {
 		}
 		return;
 	} else if (const auto topic = row.key.topic()) {
-		session().data().saveViewAsMessages(topic->forum(), false);
-		controller()->showThread(
-			topic,
-			row.message.fullId.msg,
-			Window::SectionShow::Way::ClearStack);
+		if (row.newWindow) {
+			controller()->showInNewWindow(
+				Window::SeparateId(topic),
+				row.message.fullId.msg);
+		} else {
+			session().data().saveViewAsMessages(topic->forum(), false);
+			controller()->showThread(
+				topic,
+				row.message.fullId.msg,
+				Window::SectionShow::Way::ClearStack);
+		}
 	} else if (history
 		&& row.userpicClick
 		&& (row.message.fullId.msg == ShowAtUnreadMsgId)
@@ -595,16 +603,19 @@ void Widget::chosenRow(const ChosenRow &row) {
 		const auto forum = history->peer->forum();
 		if (controller()->shownForum().current() == forum) {
 			controller()->closeForum();
-			return;
-		}
-		controller()->showForum(
-			forum,
-			Window::SectionShow().withChildColumn());
-		if (forum->channel()->viewForumAsMessages()) {
-			controller()->showThread(
-				history,
-				ShowAtUnreadMsgId,
-				Window::SectionShow::Way::ClearStack);
+		} else if (row.newWindow) {
+			controller()->showInNewWindow(
+				Window::SeparateId(Window::SeparateType::Forum, history));
+		} else {
+			controller()->showForum(
+				forum,
+				Window::SectionShow().withChildColumn());
+			if (forum->channel()->viewForumAsMessages()) {
+				controller()->showThread(
+					history,
+					ShowAtUnreadMsgId,
+					Window::SectionShow::Way::ClearStack);
+			}
 		}
 		return;
 	} else if (history) {
@@ -629,6 +640,12 @@ void Widget::chosenRow(const ChosenRow &row) {
 				controller()->openPeerStories(sources.front().id, list);
 				return;
 			}
+		}
+		if (row.newWindow) {
+			controller()->showInNewWindow(Window::SeparateId(
+				Window::SeparateType::Archive,
+				&session()));
+			return;
 		}
 		controller()->openFolder(folder);
 		hideChildList();
@@ -1847,13 +1864,21 @@ void Widget::slideFinished() {
 
 void Widget::escape() {
 	if (!cancelSearch({ .jumpBackToSearchedChat = true })) {
-		if (controller()->shownForum().current()) {
-			controller()->closeForum();
+		if (const auto forum = controller()->shownForum().current()) {
+			const auto id = controller()->windowId();
+			const auto initial = id.forum();
+			if (!initial) {
+				controller()->closeForum();
+			} else if (initial != forum) {
+				controller()->showForum(initial);
+			}
 		} else if (controller()->openedFolder().current()) {
-			controller()->closeFolder();
+			if (!controller()->windowId().folder()) {
+				controller()->closeFolder();
+			}
 		} else if (controller()->activeChatEntryCurrent().key) {
 			controller()->content()->dialogsCancelled();
-		} else {
+		} else if (controller()->isPrimary()) {
 			const auto filters = &session().data().chatsFilters();
 			const auto &list = filters->list();
 			const auto first = list.empty() ? FilterId() : list.front().id();
@@ -2125,14 +2150,14 @@ bool Widget::searchForPeersRequired(const QString &query) const {
 	return _searchState.filterChatsList()
 		&& !_openedForum
 		&& !query.isEmpty()
-		&& !IsHashtagSearchQuery(query);
+		&& (IsHashOrCashtagSearchQuery(query) == HashOrCashtag::None);
 }
 
 bool Widget::searchForTopicsRequired(const QString &query) const {
 	return _searchState.filterChatsList()
 		&& _openedForum
 		&& !query.isEmpty()
-		&& !IsHashtagSearchQuery(query)
+		&& (IsHashOrCashtagSearchQuery(query) == HashOrCashtag::None)
 		&& !_openedForum->topicsList()->loaded();
 }
 
@@ -2654,16 +2679,19 @@ void Widget::updateCancelSearch() {
 QString Widget::validateSearchQuery() {
 	const auto query = currentSearchQuery();
 	if (_searchState.tab == ChatSearchTab::PublicPosts) {
-		_searchingHashtag = true;
+		if (_searchHashOrCashtag == HashOrCashtag::None) {
+			_searchHashOrCashtag = HashOrCashtag::Hashtag;
+		}
 		const auto fixed = FixHashtagSearchQuery(
 			query,
-			currentSearchQueryCursorPosition());
+			currentSearchQueryCursorPosition(),
+			_searchHashOrCashtag);
 		if (fixed.text != query) {
 			setSearchQuery(fixed.text, fixed.cursorPosition);
 		}
 		return fixed.text;
 	} else {
-		_searchingHashtag = IsHashtagSearchQuery(query);
+		_searchHashOrCashtag = IsHashOrCashtagSearchQuery(query);
 	}
 	return query;
 }
@@ -2701,6 +2729,9 @@ void Widget::updateForceDisplayWide() {
 void Widget::showForum(
 		not_null<Data::Forum*> forum,
 		const Window::SectionShow &params) {
+	if (_openedForum == forum) {
+		return;
+	}
 	const auto nochat = !controller()->mainSectionShown();
 	if (!params.childColumn
 		|| (Core::App().settings().dialogsWidthRatio(nochat) == 0.)
@@ -2860,11 +2891,12 @@ bool Widget::applySearchState(SearchState state) {
 		state.fromPeer = nullptr;
 	}
 	if (state.tab == ChatSearchTab::PublicPosts
-		&& !IsHashtagSearchQuery(state.query)) {
+		&& IsHashOrCashtagSearchQuery(state.query) == HashOrCashtag::None) {
 		state.tab = (_openedForum && !state.inChat)
 			? ChatSearchTab::ThisPeer
 			: ChatSearchTab::MyMessages;
-	} else if (!state.inChat && !_searchingHashtag) {
+	} else if (!state.inChat
+		&& _searchHashOrCashtag == HashOrCashtag::None) {
 		state.tab = (forum || _openedForum)
 			? ChatSearchTab::ThisPeer
 			: ChatSearchTab::MyMessages;
@@ -2904,7 +2936,7 @@ bool Widget::applySearchState(SearchState state) {
 			&& !state.inChat
 			&& !_openedForum)
 		|| (state.tab == ChatSearchTab::PublicPosts
-			&& !_searchingHashtag)) {
+			&& _searchHashOrCashtag == HashOrCashtag::None)) {
 		state.tab = state.inChat.topic()
 			? ChatSearchTab::ThisTopic
 			: (state.inChat.owningHistory() || state.inChat.sublist())
@@ -3636,7 +3668,11 @@ bool Widget::cancelSearch(CancelSearchOptions options) {
 	_inner->clearFilter();
 	applySearchState(std::move(updatedState));
 	if (_suggestions && clearSearchFocus) {
+		const auto clearLockedFocus = !_searchHasFocus;
 		setInnerFocus(true);
+		if (clearLockedFocus) {
+			processSearchFocusChange();
+		}
 	}
 	updateForceDisplayWide();
 	return clearingQuery || clearingInChat || clearSearchFocus;

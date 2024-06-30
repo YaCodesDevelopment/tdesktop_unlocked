@@ -1362,7 +1362,7 @@ void OverlayWidget::updateControls() {
 		if (_message) {
 			return ItemDateTime(_message);
 		} else if (_photo) {
-			return base::unixtime::parse(_photo->date);
+			return base::unixtime::parse(_photo->date());
 		} else if (_document) {
 			return base::unixtime::parse(_document->date);
 		}
@@ -2436,7 +2436,7 @@ void OverlayWidget::saveAs() {
 					u".mp4"_q,
 					QString(),
 					false,
-					_photo->date),
+					_photo->date()),
 				crl::guard(_window, [=](const QString &result) {
 					QFile f(result);
 					if (!result.isEmpty()
@@ -2467,7 +2467,7 @@ void OverlayWidget::saveAs() {
 				u".jpg"_q,
 				QString(),
 				false,
-				_photo->date),
+				_photo->date()),
 			crl::guard(_window, [=](const QString &result) {
 				if (!result.isEmpty() && _photo == photo) {
 					media->saveToFile(result);
@@ -2771,7 +2771,7 @@ auto OverlayWidget::sharedMediaType() const
 	using Type = SharedMediaType;
 	if (_message) {
 		if (const auto media = _message->media()) {
-			if (media->webpage()) {
+			if (media->webpage() || media->invoice()) {
 				return std::nullopt;
 			}
 		}
@@ -2999,6 +2999,14 @@ std::optional<OverlayWidget::CollageKey> OverlayWidget::collageKey() const {
 						return item;
 					}
 				}
+			} else if (const auto invoice = media->invoice()) {
+				for (const auto &item : invoice->extendedMedia) {
+					if (_photo && item->photo() == _photo) {
+						return _photo;
+					} else if (_document && item->document() == _document) {
+						return _document;
+					}
+				}
 			}
 		}
 	}
@@ -3032,6 +3040,16 @@ void OverlayWidget::validateCollage() {
 			if (const auto media = _message->media()) {
 				if (const auto page = media->webpage()) {
 					_collageData = page->collage;
+				} else if (const auto invoice = media->invoice()) {
+					auto &data = *_collageData;
+					data.items.reserve(invoice->extendedMedia.size());
+					for (const auto &item : invoice->extendedMedia) {
+						if (const auto photo = item->photo()) {
+							data.items.push_back(photo);
+						} else if (const auto document = item->document()) {
+							data.items.push_back(document);
+						}
+					}
 				}
 			}
 		}
@@ -5840,6 +5858,8 @@ void OverlayWidget::handleMouseRelease(
 			QVariant::fromValue(ClickHandlerContext{
 				.itemId = _message ? _message->fullId() : FullMsgId(),
 				.sessionWindow = base::make_weak(findWindow()),
+				.show = _stories ? _stories->uiShow() : nullptr,
+				.dark = true,
 			})
 		});
 		return;
@@ -6138,7 +6158,7 @@ Window::SessionController *OverlayWidget::findWindow(bool switchTo) const {
 
 	if (switchTo) {
 		auto controllerPtr = (Window::SessionController*)nullptr;
-		const auto account = &_session->account();
+		const auto account = not_null(&_session->account());
 		const auto sessionWindow = Core::App().windowFor(account);
 		const auto anyWindow = (sessionWindow
 			&& &sessionWindow->account() == account)

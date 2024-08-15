@@ -1185,23 +1185,32 @@ Image *MainWidget::newBackgroundThumb() {
 }
 
 void MainWidget::setInnerFocus() {
+	const auto setTo = [&](auto &&widget) {
+		if (widget->isHidden()) {
+			// If we try setting focus inside a hidden widget, we may
+			// end up focusing search field in dialogs on window activation.
+			setFocus();
+		} else {
+			widget->setInnerFocus();
+		}
+	};
 	if (_dialogs && _dialogs->searchHasFocus()) {
-		_dialogs->setInnerFocus();
+		setTo(_dialogs);
 	} else if (_hider || !_history->peer()) {
 		if (!_hider && _mainSection) {
-			_mainSection->setInnerFocus();
+			setTo(_mainSection);
 		} else if (!_hider && _thirdSection) {
-			_thirdSection->setInnerFocus();
+			setTo(_thirdSection);
 		} else if (_dialogs) {
-			_dialogs->setInnerFocus();
+			setTo(_dialogs);
 		} else {
 			// Maybe we're just closing a child window, content is destroyed.
 			_history->setFocus();
 		}
 	} else if (_mainSection) {
-		_mainSection->setInnerFocus();
+		setTo(_mainSection);
 	} else {
-		_history->setInnerFocus();
+		setTo(_history);
 	}
 }
 
@@ -1947,9 +1956,9 @@ void MainWidget::showNonPremiumLimitToast(bool download) {
 			? tr::lng_limit_download_title
 			: tr::lng_limit_upload_title)(tr::now),
 		.text = std::move(text),
-		.duration = 5 * crl::time(1000),
-		.slideSide = RectPart::Top,
 		.filter = std::move(filter),
+		.attach = RectPart::Top,
+		.duration = 5 * crl::time(1000),
 	});
 }
 

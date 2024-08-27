@@ -93,7 +93,7 @@ jobs:
           -D CMAKE_CXX_FLAGS="" \
           -D CMAKE_EXE_LINKER_FLAGS="-s" \
           -D TDESKTOP_API_TEST=ON \
-          -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
+          -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
           -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON \
           $DEFINE
 
@@ -115,7 +115,7 @@ jobs:
         run: |
           cd $REPO_NAME/out/Release
           sudo mkdir artifact
-          sudo mv {Telegram,Updater} artifact/
+          sudo mv Telegram artifact/
       - uses: actions/upload-artifact@v4
         if: env.UPLOAD_ARTIFACT == 'true'
         name: Upload artifact.

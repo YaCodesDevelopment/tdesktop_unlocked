@@ -39,6 +39,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_style.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/expandable_peer_list.h"
+#include "ui/widgets/menu/menu_add_action_callback_factory.h"
+#include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/image/image.h"
 #include "ui/text/text_utilities.h"
@@ -52,6 +54,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "boxes/peers/edit_participant_box.h"
 #include "boxes/peers/edit_participants_box.h"
+#include "data/data_changes.h"
 #include "data/data_session.h"
 #include "data/data_photo.h"
 #include "data/data_photo_media.h"
@@ -569,11 +572,13 @@ void InnerWidget::showFilter(Fn<void(FilterValue &&filter)> callback) {
 			const auto users = ranges::views::all(
 				peers
 			) | ranges::views::transform([](not_null<PeerData*> p) {
-					return not_null{ p->asUser() };
+				return not_null{ p->asUser() };
 			}) | ranges::to_vector;
 			callback(FilterValue{
 				.flags = collectFlags(),
-				.admins = users,
+				.admins = (admins.size() == users.size())
+					? std::nullopt
+					: std::optional(users),
 			});
 		});
 		box->addButton(tr::lng_cancel(), [box] { box->closeBox(); });
@@ -832,7 +837,8 @@ void InnerWidget::preloadMore(Direction direction) {
 			| ((f & LocalFlag::Delete) ? Flag::f_delete : empty)
 			| ((f & LocalFlag::GroupCall) ? Flag::f_group_call : empty)
 			| ((f & LocalFlag::Invites) ? Flag::f_invites : empty)
-			| ((f & LocalFlag::Topics) ? Flag::f_forums : empty);
+			| ((f & LocalFlag::Topics) ? Flag::f_forums : empty)
+			| ((f & LocalFlag::SubExtend) ? Flag::f_sub_extend : empty);
 	}();
 	if (_filter.flags != 0) {
 		flags |= MTPchannels_GetAdminLog::Flag::f_events_filter;
@@ -1564,6 +1570,30 @@ void InnerWidget::suggestRestrictParticipant(
 			}).send();
 		}
 	}, &st::menuIconPermissions);
+
+	{
+		const auto lifetime = std::make_shared<rpl::lifetime>();
+		auto handler = [=, this] {
+			participant->session().changes().peerUpdates(
+				_channel,
+				Data::PeerUpdate::Flag::Members
+			) | rpl::start_with_next([=](const Data::PeerUpdate &update) {
+				_downLoaded = false;
+				preloadMore(Direction::Down);
+				lifetime->destroy();
+			}, *lifetime);
+			participant->session().api().chatParticipants().kick(
+				_channel,
+				participant,
+				{ _channel->restrictions(), 0 });
+		};
+		Ui::Menu::CreateAddActionCallback(_menu)({
+			.text = tr::lng_context_ban_user(tr::now),
+			.handler = std::move(handler),
+			.icon = &st::menuIconBlockAttention,
+			.isAttention = true,
+		});
+	}
 }
 
 void InnerWidget::restrictParticipant(

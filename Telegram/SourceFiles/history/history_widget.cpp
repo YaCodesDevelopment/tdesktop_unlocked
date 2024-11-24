@@ -869,7 +869,7 @@ HistoryWidget::HistoryWidget(
 		}
 		if (flags & PeerUpdateFlag::FullInfo) {
 			fullInfoUpdated();
-			if (const auto channel = _peer ? _peer->asChannel() : nullptr) {
+			if (const auto channel = _peer->asChannel()) {
 				if (channel->allowedReactions().paidEnabled) {
 					session().credits().load();
 				}
@@ -1947,24 +1947,12 @@ bool HistoryWidget::notify_switchInlineBotButtonReceived(
 		UserData *samePeerBot,
 		MsgId samePeerReplyTo) {
 	if (samePeerBot) {
-		if (_history) {
-			const auto textWithTags = TextWithTags{
-				'@' + samePeerBot->username() + ' ' + query,
-				TextWithTags::Tags(),
-			};
-			MessageCursor cursor = {
-				int(textWithTags.text.size()),
-				int(textWithTags.text.size()),
-				Ui::kQFixedMax,
-			};
-			_history->setLocalDraft(std::make_unique<Data::Draft>(
-				textWithTags,
-				FullReplyTo(),
-				cursor,
-				Data::WebPageDraft()));
-			applyDraft();
-			return true;
+		const auto to = controller()->currentDialogsEntryState();
+		if (!to.key.owningHistory()) {
+			return false;
 		}
+		controller()->switchInlineQuery(to, samePeerBot, query);
+		return true;
 	} else if (const auto bot = _peer ? _peer->asUser() : nullptr) {
 		const auto to = bot->isBot()
 			? bot->botInfo->inlineReturnTo
@@ -2192,7 +2180,7 @@ void HistoryWidget::showHistory(
 	_showAtMsgHighlightPart = {};
 	_showAtMsgHighlightPartOffsetHint = 0;
 
-	const auto wasDialogsEntryState = computeDialogsEntryState();
+	const auto wasState = controller()->currentDialogsEntryState();
 	const auto startBot = (showAtMsgId == ShowAndStartBotMsgId);
 	if (startBot) {
 		showAtMsgId = ShowAtTheEndMsgId;
@@ -2297,8 +2285,8 @@ void HistoryWidget::showHistory(
 			if (const auto user = _peer->asUser()) {
 				if (const auto &info = user->botInfo) {
 					if (startBot) {
-						if (wasDialogsEntryState.key) {
-							info->inlineReturnTo = wasDialogsEntryState;
+						if (wasState.key) {
+							info->inlineReturnTo = wasState;
 						}
 						sendBotStartCommand();
 						_history->clearLocalDraft({});
@@ -2533,8 +2521,8 @@ void HistoryWidget::showHistory(
 		if (const auto user = _peer->asUser()) {
 			if (const auto &info = user->botInfo) {
 				if (startBot) {
-					if (wasDialogsEntryState.key) {
-						info->inlineReturnTo = wasDialogsEntryState;
+					if (wasState.key) {
+						info->inlineReturnTo = wasState;
 					}
 					sendBotStartCommand();
 				}
@@ -3440,7 +3428,7 @@ void HistoryWidget::messagesFailed(const MTP::Error &error, int requestId) {
 		closeCurrent();
 		const auto wasAccount = not_null(&was->account());
 		if (const auto primary = Core::App().windowFor(wasAccount)) {
-			primary->showToast((was && was->isMegagroup())
+			primary->showToast(was->isMegagroup()
 				? tr::lng_group_not_accessible(tr::now)
 				: tr::lng_channel_not_accessible(tr::now));
 		}
@@ -5111,7 +5099,7 @@ bool HistoryWidget::updateCmdStartShown() {
 	const auto textSmall = _fieldCharsCountManager.count() > kSmallMenuAfter;
 	const auto textChanged = _botMenu.button
 		&& ((_botMenu.text != bot->botInfo->botMenuButtonText)
-		|| (_botMenu.small != textSmall));
+			|| (_botMenu.small != textSmall));
 	if (textChanged) {
 		_botMenu.text = bot->botInfo->botMenuButtonText;
 		if ((_botMenu.small = textSmall)) {
@@ -7701,12 +7689,12 @@ void HistoryWidget::createSponsoredMessageBar() {
 	session().sponsoredMessages().itemRemoved(
 		maybeFullId
 	) | rpl::start_with_next([this] {
+		_sponsoredMessageBar->toggle(false, anim::type::normal);
 		_sponsoredMessageBar->shownValue() | rpl::filter(
 			!rpl::mappers::_1
 		) | rpl::start_with_next([this] {
 			_sponsoredMessageBar = nullptr;
 		}, _sponsoredMessageBar->lifetime());
-		_sponsoredMessageBar->toggle(false, anim::type::normal);
 	}, _sponsoredMessageBar->lifetime());
 
 	if (maybeFullId) {
@@ -7896,7 +7884,15 @@ void HistoryWidget::clearFieldText(
 
 void HistoryWidget::replyToMessage(FullReplyTo id) {
 	if (const auto item = session().data().message(id.messageId)) {
-		replyToMessage(item, id.quote, id.quoteOffset);
+		if (CanSendReply(item) && !base::IsCtrlPressed()) {
+			replyToMessage(item, id.quote, id.quoteOffset);
+		} else if (item->allowsForward()) {
+			const auto show = controller()->uiShow();
+			HistoryView::Controls::ShowReplyToChatBox(show, id);
+		} else {
+			controller()->showToast(
+				tr::lng_error_cant_reply_other(tr::now));
+		}
 	}
 }
 

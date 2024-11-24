@@ -18,6 +18,7 @@ set(style_files
     ui/chat/chat.style
     ui/effects/credits.style
     ui/effects/premium.style
+    ui/color_indices.style
     boxes/boxes.style
     dialogs/dialogs.style
     chat_helpers/chat_helpers.style
@@ -310,6 +311,8 @@ PRIVATE
     ui/chat/attach/attach_album_preview.h
     ui/chat/attach/attach_album_thumbnail.cpp
     ui/chat/attach/attach_album_thumbnail.h
+    ui/chat/attach/attach_bot_downloads.cpp
+    ui/chat/attach/attach_bot_downloads.h
     ui/chat/attach/attach_bot_webview.cpp
     ui/chat/attach/attach_bot_webview.h
     ui/chat/attach/attach_controls.cpp

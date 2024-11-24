@@ -117,11 +117,12 @@ constexpr auto kTransactionsLimit = 100;
 			? base::unixtime::parse(tl.data().vtransaction_date()->v)
 			: QDateTime(),
 		.successLink = qs(tl.data().vtransaction_url().value_or_empty()),
-		.convertStars = int(stargift
+		.starsConverted = int(stargift
 			? stargift->data().vconvert_stars().v
 			: 0),
 		.floodSkip = int(tl.data().vfloodskip_number().value_or(0)),
 		.converted = stargift && incoming,
+		.stargift = stargift.has_value(),
 		.reaction = tl.data().is_reaction(),
 		.refunded = tl.data().is_refund(),
 		.pending = tl.data().is_pending(),
@@ -132,17 +133,26 @@ constexpr auto kTransactionsLimit = 100;
 }
 
 [[nodiscard]] Data::SubscriptionEntry SubscriptionFromTL(
-		const MTPStarsSubscription &tl) {
+		const MTPStarsSubscription &tl,
+		not_null<PeerData*> peer) {
 	return Data::SubscriptionEntry{
 		.id = qs(tl.data().vid()),
 		.inviteHash = qs(tl.data().vchat_invite_hash().value_or_empty()),
+		.title = qs(tl.data().vtitle().value_or_empty()),
+		.slug = qs(tl.data().vinvoice_slug().value_or_empty()),
 		.until = base::unixtime::parse(tl.data().vuntil_date().v),
 		.subscription = Data::PeerSubscription{
 			.credits = tl.data().vpricing().data().vamount().v,
 			.period = tl.data().vpricing().data().vperiod().v,
 		},
 		.barePeerId = peerFromMTP(tl.data().vpeer()).value,
+		.photoId = (tl.data().vphoto()
+			? peer->owner().photoFromWeb(
+				*tl.data().vphoto(),
+				ImageLocation())->id
+			: 0),
 		.cancelled = tl.data().is_canceled(),
+		.cancelledByBot = tl.data().is_bot_canceled(),
 		.expired = (base::unixtime::now() > tl.data().vuntil_date().v),
 		.canRefulfill = tl.data().is_can_refulfill(),
 	};
@@ -165,7 +175,7 @@ constexpr auto kTransactionsLimit = 100;
 	if (const auto history = data.vsubscriptions()) {
 		subscriptions.reserve(history->v.size());
 		for (const auto &tl : history->v) {
-			subscriptions.push_back(SubscriptionFromTL(tl));
+			subscriptions.push_back(SubscriptionFromTL(tl, peer));
 		}
 	}
 	return Data::CreditsStatusSlice{
@@ -174,7 +184,8 @@ constexpr auto kTransactionsLimit = 100;
 		.balance = status.data().vbalance().v,
 		.subscriptionsMissingBalance
 			= status.data().vsubscriptions_missing_balance().value_or_empty(),
-		.allLoaded = !status.data().vnext_offset().has_value(),
+		.allLoaded = !status.data().vnext_offset().has_value()
+			&& !status.data().vsubscriptions_next_offset().has_value(),
 		.token = qs(status.data().vnext_offset().value_or_empty()),
 		.tokenSubscriptions = qs(
 			status.data().vsubscriptions_next_offset().value_or_empty()),
@@ -459,6 +470,22 @@ rpl::producer<rpl::no_value, QString> CreditsGiveawayOptions::request() {
 
 Data::CreditsGiveawayOptions CreditsGiveawayOptions::options() const {
 	return _options;
+}
+
+void EditCreditsSubscription(
+		not_null<Main::Session*> session,
+		const QString &id,
+		bool cancel,
+		Fn<void()> done,
+		Fn<void(QString)> fail) {
+	using Flag = MTPpayments_ChangeStarsSubscription::Flag;
+	session->api().request(
+		MTPpayments_ChangeStarsSubscription(
+			MTP_flags(Flag::f_canceled),
+			MTP_inputPeerSelf(),
+			MTP_string(id),
+			MTP_bool(cancel)
+	)).done(done).fail([=](const MTP::Error &e) { fail(e.type()); }).send();
 }
 
 } // namespace Api

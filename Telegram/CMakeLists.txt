@@ -294,6 +294,8 @@ PRIVATE
     boxes/peer_list_box.h
     boxes/peer_list_controllers.cpp
     boxes/peer_list_controllers.h
+    boxes/peer_list_widgets.cpp
+    boxes/peer_list_widgets.h
     boxes/peer_lists_box.cpp
     boxes/peer_lists_box.h
     boxes/passcode_box.cpp
@@ -986,6 +988,10 @@ PRIVATE
     info/profile/info_profile_values.h
     info/profile/info_profile_widget.cpp
     info/profile/info_profile_widget.h
+    info/reactions_list/info_reactions_list_widget.cpp
+    info/reactions_list/info_reactions_list_widget.h
+    info/requests_list/info_requests_list_widget.cpp
+    info/requests_list/info_requests_list_widget.h
     info/saved/info_saved_sublists_widget.cpp
     info/saved/info_saved_sublists_widget.h
     info/settings/info_settings_widget.cpp
@@ -1036,6 +1042,10 @@ PRIVATE
     info/info_wrap_widget.h
     inline_bots/bot_attach_web_view.cpp
     inline_bots/bot_attach_web_view.h
+    inline_bots/inline_bot_confirm_prepared.cpp
+    inline_bots/inline_bot_confirm_prepared.h
+    inline_bots/inline_bot_downloads.cpp
+    inline_bots/inline_bot_downloads.h
     inline_bots/inline_bot_layout_internal.cpp
     inline_bots/inline_bot_layout_internal.h
     inline_bots/inline_bot_layout_item.cpp
@@ -1543,6 +1553,8 @@ PRIVATE
     ui/widgets/label_with_custom_emoji.h
     ui/widgets/chat_filters_tabs_strip.cpp
     ui/widgets/chat_filters_tabs_strip.h
+    ui/widgets/peer_bubble.cpp
+    ui/widgets/peer_bubble.h
     ui/countryinput.cpp
     ui/countryinput.h
     ui/dynamic_thumbnails.cpp

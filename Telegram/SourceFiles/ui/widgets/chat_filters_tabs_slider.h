@@ -27,9 +27,11 @@ public:
 		not_null<Ui::RpWidget*> parent,
 		const style::SettingsSlider &st);
 
+	bool setSectionsAndCheckChanged(std::vector<QString> &&sections);
+
 	[[nodiscard]] int centerOfSection(int section) const;
 	void fitWidthToSections();
-	void setUnreadCount(int index, int unreadCount);
+	void setUnreadCount(int index, int unreadCount, bool muted);
 	void setLockedFrom(int index);
 
 	[[nodiscard]] rpl::producer<int> contextMenuRequested() const;
@@ -62,7 +64,7 @@ protected:
 	std::vector<ShiftedSection> _sections;
 
 private:
-	[[nodiscard]] QImage cacheUnreadCount(int count) const;
+	[[nodiscard]] QImage cacheUnreadCount(int count, bool muted) const;
 	[[nodiscard]] int calculateLockedFromX() const;
 
 	using Index = int;

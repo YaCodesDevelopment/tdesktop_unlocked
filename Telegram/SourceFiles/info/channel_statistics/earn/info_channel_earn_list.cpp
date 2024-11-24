@@ -52,6 +52,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/vertical_list.h"
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/label_with_custom_emoji.h"
+#include "ui/widgets/peer_bubble.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/slider_natural_width.h"
 #include "ui/wrap/slide_wrap.h"
@@ -117,27 +118,6 @@ void ShowMenu(not_null<Ui::GenericBox*> box, const QString &text) {
 			resolver->request(url);
 		}
 	});
-}
-
-void AddArrow(not_null<Ui::RpWidget*> parent) {
-	const auto arrow = Ui::CreateChild<Ui::RpWidget>(parent.get());
-	arrow->paintRequest(
-	) | rpl::start_with_next([=](const QRect &r) {
-		auto p = QPainter(arrow);
-
-		const auto path = Ui::ToggleUpDownArrowPath(
-			st::statisticsShowMoreButtonArrowSize,
-			st::statisticsShowMoreButtonArrowSize,
-			st::statisticsShowMoreButtonArrowSize,
-			st::mainMenuToggleFourStrokes,
-			0.);
-
-		auto hq = PainterHighQualityEnabler(p);
-		p.fillPath(path, st::lightButtonFg);
-	}, arrow->lifetime());
-	arrow->resize(Size(st::statisticsShowMoreButtonArrowSize * 2));
-	arrow->move(st::statisticsShowMoreButtonArrowPosition);
-	arrow->show();
 }
 
 void AddHeader(
@@ -833,7 +813,7 @@ void InnerWidget::fill() {
 		Ui::AddSkip(container);
 	}
 #ifndef _DEBUG
-	if (!channel->amCreator()) {
+	if (channel && !channel->amCreator()) {
 		Ui::AddSkip(container);
 		Ui::AddSkip(container);
 		return;
@@ -1220,58 +1200,10 @@ void InnerWidget::fill() {
 						AddRecipient(box, recipient);
 					}
 					if (isIn) {
-						const auto peerBubble = box->addRow(
+						box->addRow(
 							object_ptr<Ui::CenterWrap<>>(
 								box,
-								object_ptr<Ui::RpWidget>(box)))->entity();
-						peerBubble->setAttribute(
-							Qt::WA_TransparentForMouseEvents);
-						const auto left = Ui::CreateChild<Ui::UserpicButton>(
-							peerBubble,
-							peer,
-							st::uploadUserpicButton);
-						const auto right = Ui::CreateChild<Ui::FlatLabel>(
-							peerBubble,
-							Info::Profile::NameValue(peer),
-							st::channelEarnSemiboldLabel);
-						rpl::combine(
-							left->sizeValue(),
-							right->sizeValue()
-						) | rpl::start_with_next([=](
-								const QSize &leftSize,
-								const QSize &rightSize) {
-							const auto padding = QMargins(
-								st::chatGiveawayPeerPadding.left() * 2,
-								st::chatGiveawayPeerPadding.top(),
-								st::chatGiveawayPeerPadding.right(),
-								st::chatGiveawayPeerPadding.bottom());
-							peerBubble->resize(
-								leftSize.width()
-									+ rightSize.width()
-									+ rect::m::sum::h(padding),
-								leftSize.height());
-							left->moveToLeft(0, 0);
-							right->moveToRight(
-								padding.right(),
-								padding.top());
-							const auto maxRightSize = box->width()
-								- rect::m::sum::h(st::boxRowPadding)
-								- rect::m::sum::h(padding)
-								- leftSize.width();
-							if (rightSize.width() > maxRightSize) {
-								right->resizeToWidth(maxRightSize);
-							}
-						}, peerBubble->lifetime());
-						peerBubble->paintRequest(
-						) | rpl::start_with_next([=] {
-							auto p = QPainter(peerBubble);
-							auto hq = PainterHighQualityEnabler(p);
-							p.setPen(Qt::NoPen);
-							p.setBrush(st::windowBgOver);
-							const auto rect = peerBubble->rect();
-							const auto radius = rect.height() / 2;
-							p.drawRoundedRect(rect, radius, radius);
-						}, peerBubble->lifetime());
+								Ui::CreatePeerBubble(box, peer)));
 					}
 					const auto closeBox = [=] { box->closeBox(); };
 					{
@@ -1346,8 +1278,8 @@ void InnerWidget::fill() {
 			handleSlice(firstSlice);
 			if (!firstSlice.allLoaded) {
 				struct ShowMoreState final {
-					ShowMoreState(not_null<ChannelData*> channel)
-					: api(channel) {
+					ShowMoreState(not_null<PeerData*> peer)
+					: api(peer) {
 					}
 					Api::EarnStatistics api;
 					bool loading = false;
@@ -1355,7 +1287,7 @@ void InnerWidget::fill() {
 					rpl::variable<int> showed = 0;
 				};
 				const auto state
-					= lifetime().make_state<ShowMoreState>(channel);
+					= lifetime().make_state<ShowMoreState>(_peer);
 				state->token = firstSlice.token;
 				state->showed = firstSlice.list.size();
 				const auto max = firstSlice.total;
@@ -1372,7 +1304,7 @@ void InnerWidget::fill() {
 								) | tr::to_count()),
 							st::statisticsShowMoreButton)));
 				const auto button = wrap->entity();
-				AddArrow(button);
+				Ui::AddToggleUpDownArrowToMoreButton(button);
 
 				wrap->toggle(true, anim::type::instant);
 				const auto handleReceived = [=](

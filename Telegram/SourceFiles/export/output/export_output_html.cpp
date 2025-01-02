@@ -21,7 +21,7 @@ namespace Export {
 namespace Output {
 namespace {
 
-constexpr auto kMessagesInFile = 1000;
+constexpr auto kMessagesInFile = 128000;
 constexpr auto kPersonalUserpicSize = 90;
 constexpr auto kEntryUserpicSize = 48;
 constexpr auto kServiceMessagePhotoSize = 60;

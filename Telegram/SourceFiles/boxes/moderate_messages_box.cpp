@@ -72,6 +72,16 @@ ModerateOptions CalculateModerateOptions(const HistoryItemsList &items) {
 		if (peer != item->history()->peer) {
 			return {};
 		}
+		{
+			const auto author = item->author();
+			if (author == peer) {
+				return {};
+			} else if (const auto channel = author->asChannel()) {
+				if (channel->discussionLink() == peer) {
+					return {};
+				}
+			}
+		}
 		if (!item->suggestBanReport()) {
 			result.allCanBan = false;
 		}
@@ -361,7 +371,9 @@ void CreateModerateMessagesBox(
 				box,
 				rpl::conditional(
 					ownedWrap->toggledValue(),
-					tr::lng_context_restrict_user(),
+					tr::lng_restrict_user(
+						lt_count,
+						rpl::single(participants.size()) | tr::to_count()),
 					rpl::conditional(
 						rpl::single(isSingle),
 						tr::lng_ban_user(),
@@ -443,10 +455,7 @@ void CreateModerateMessagesBox(
 		) | rpl::start_with_next([=](const TextWithEntities &text) {
 			raw->setMarkedText(
 				Ui::Text::Link(text, u"internal:"_q),
-				Core::MarkedTextContext{
-					.session = session,
-					.customEmojiRepaint = [=] { raw->update(); },
-				});
+				Core::TextContext({ .session = session }));
 		}, label->lifetime());
 
 		Ui::AddSkip(inner);

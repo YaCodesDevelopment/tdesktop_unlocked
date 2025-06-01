@@ -773,9 +773,7 @@ void StickerSetBox::updateButtons() {
 					- st.buttonPadding.left()
 					- st.buttonPadding.left());
 				button->setClickedCallback([=] {
-					using namespace ChatHelpers;
-					const auto usage = WindowUsage::PremiumPromo;
-					if (const auto window = _show->resolveWindow(usage)) {
+					if (const auto window = _show->resolveWindow()) {
 						Settings::ShowPremium(window, u"animated_emoji"_q);
 					}
 				});
@@ -1512,7 +1510,7 @@ void StickerSetBox::Inner::fillDeleteStickerBox(
 	sticker->paintRequest(
 	) | rpl::start_with_next([=] {
 		auto p = Painter(sticker);
-		if (const auto strong = weak.data()) {
+		if ([[maybe_unused]] const auto strong = weak.data()) {
 			const auto paused = On(PowerSaving::kStickersPanel)
 				|| show->paused(ChatHelpers::PauseReason::Layer);
 			paintSticker(p, index, QPoint(), paused, crl::now());
@@ -1566,7 +1564,7 @@ void StickerSetBox::Inner::fillDeleteStickerBox(
 					Data::StickersType::Stickers);
 			}, [](const auto &) {
 			});
-			if (const auto strong = weak.data()) {
+			if ([[maybe_unused]] const auto strong = weak.data()) {
 				applySet(result);
 			}
 			if (const auto strongBox = weakBox.data()) {

@@ -271,7 +271,9 @@ void TopBarWidget::refreshLang() {
 }
 
 void TopBarWidget::call() {
-	if (const auto peer = _activeChat.key.peer()) {
+	if (_controller->showFrozenError()) {
+		return;
+	} else if (const auto peer = _activeChat.key.peer()) {
 		if (const auto user = peer->asUser()) {
 			Core::App().calls().startOutgoingCall(user, false);
 		}
@@ -279,7 +281,9 @@ void TopBarWidget::call() {
 }
 
 void TopBarWidget::groupCall() {
-	if (const auto peer = _activeChat.key.peer()) {
+	if (_controller->showFrozenError()) {
+		return;
+	} else if (const auto peer = _activeChat.key.peer()) {
 		if (HasGroupCallMenu(peer)) {
 			showGroupCallMenu(peer);
 		} else {
@@ -578,26 +582,25 @@ void TopBarWidget::paintTopBar(Painter &p) {
 			nameleft += skip + st::dialogsChatTypeSkip;
 			namewidth -= skip + st::dialogsChatTypeSkip;
 		}
-		const auto badgeWidth = _titleBadge.drawGetWidth(
-			p,
-			QRect(
+		const auto badgeWidth = _titleBadge.drawGetWidth(p, {
+			.peer = namePeer,
+			.rectForName = QRect(
 				nameleft,
 				nametop,
 				namewidth,
 				st::msgNameStyle.font->height),
-			_title.maxWidth(),
-			width(),
-			{
-				.peer = namePeer,
-				.verified = &st::dialogsVerifiedIcon,
-				.premium = &st::dialogsPremiumIcon.icon,
-				.scam = &st::attentionButtonFg,
-				.premiumFg = &st::dialogsVerifiedIconBg,
-				.customEmojiRepaint = [=] { update(); },
-				.now = now,
-				.paused = _controller->isGifPausedAtLeastFor(
-					Window::GifPauseReason::Any),
-			});
+			.nameWidth = _title.maxWidth(),
+			.outerWidth = width(),
+			.verified = &st::dialogsVerifiedIcon,
+			.premium = &st::dialogsPremiumIcon.icon,
+			.scam = &st::attentionButtonFg,
+			.premiumFg = &st::dialogsVerifiedIconBg,
+			.customEmojiRepaint = [=] { update(); },
+			.now = now,
+			.bothVerifyAndStatus = true,
+			.paused = _controller->isGifPausedAtLeastFor(
+				Window::GifPauseReason::Any),
+		});
 		namewidth -= badgeWidth;
 
 		p.setPen(st::dialogsNameFg);
@@ -735,7 +738,7 @@ void TopBarWidget::infoClicked() {
 		return;
 	} else if (const auto topic = key.topic()) {
 		_controller->showSection(std::make_shared<Info::Memento>(topic));
-	} else if (const auto sublist = key.sublist()) {
+	} else if ([[maybe_unused]] const auto sublist = key.sublist()) {
 		_controller->showSection(std::make_shared<Info::Memento>(
 			_controller->session().user(),
 			Info::Section(Storage::SharedMediaType::Photo)));
@@ -937,8 +940,7 @@ int TopBarWidget::countSelectedButtonsTop(float64 selectedShown) {
 
 void TopBarWidget::updateSearchVisibility() {
 	const auto searchAllowedMode = (_activeChat.section == Section::History)
-		|| (_activeChat.section == Section::Replies
-			&& _activeChat.key.topic())
+		|| (_activeChat.section == Section::Replies)
 		|| (_activeChat.section == Section::SavedSublist
 			&& _activeChat.key.sublist());
 	_search->setVisible(searchAllowedMode && !_chooseForReportReason);
@@ -1180,6 +1182,7 @@ void TopBarWidget::updateControlsVisibility() {
 			if (const auto user = peer->asUser()) {
 				return !user->isSelf()
 					&& !user->isBot()
+					&& !user->isInaccessible()
 					&& !peer->isServiceUser();
 			}
 		}
@@ -1522,7 +1525,7 @@ void TopBarWidget::refreshUnreadBadge() {
 			geometry.y() + st::titleUnreadCounterTop);
 	}, _unreadBadge->lifetime());
 
-	_unreadBadge->show();
+	_unreadBadge->setVisible(!rootChatsListBar());
 	_unreadBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
 	_controller->session().data().unreadBadgeChanges(
 	) | rpl::start_with_next([=] {

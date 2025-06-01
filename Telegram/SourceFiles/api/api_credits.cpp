@@ -90,7 +90,13 @@ constexpr auto kTransactionsLimit = 100;
 		? peerFromMTP(*tl.data().vstarref_peer()).value
 		: 0;
 	const auto incoming = (amount >= StarsAmount());
-	const auto saveActorId = (reaction || !extended.empty()) && incoming;
+	const auto paidMessagesCount
+		= tl.data().vpaid_messages().value_or_empty();
+	const auto premiumMonthsForStars
+		= tl.data().vpremium_gift_months().value_or_empty();
+	const auto saveActorId = (reaction
+		|| !extended.empty()
+		|| paidMessagesCount) && incoming;
 	const auto parsedGift = stargift
 		? FromTL(&peer->session(), *stargift)
 		: std::optional<Data::StarGift>();
@@ -110,9 +116,9 @@ constexpr auto kTransactionsLimit = 100;
 		.bareGiftStickerId = giftStickerId,
 		.bareActorId = saveActorId ? barePeerId : uint64(0),
 		.uniqueGift = parsedGift ? parsedGift->unique : nullptr,
-		.starrefAmount = starrefAmount,
-		.starrefCommission = starrefCommission,
-		.starrefRecipientId = starrefBarePeerId,
+		.starrefAmount = paidMessagesCount ? StarsAmount() : starrefAmount,
+		.starrefCommission = paidMessagesCount ? 0 : starrefCommission,
+		.starrefRecipientId = paidMessagesCount ? 0 : starrefBarePeerId,
 		.peerType = tl.data().vpeer().match([](const HistoryPeerTL &) {
 			return Data::CreditsHistoryEntry::PeerType::Peer;
 		}, [](const MTPDstarsTransactionPeerPlayMarket &) {
@@ -138,13 +144,20 @@ constexpr auto kTransactionsLimit = 100;
 			? base::unixtime::parse(tl.data().vtransaction_date()->v)
 			: QDateTime(),
 		.successLink = qs(tl.data().vtransaction_url().value_or_empty()),
+		.paidMessagesCount = paidMessagesCount,
+		.paidMessagesAmount = (paidMessagesCount
+			? starrefAmount
+			: StarsAmount()),
+		.paidMessagesCommission = paidMessagesCount ? starrefCommission : 0,
 		.starsConverted = int(nonUniqueGift
 			? nonUniqueGift->vconvert_stars().v
 			: 0),
+		.premiumMonthsForStars = premiumMonthsForStars,
 		.floodSkip = int(tl.data().vfloodskip_number().value_or(0)),
 		.converted = stargift && incoming,
 		.stargift = stargift.has_value(),
 		.giftUpgraded = tl.data().is_stargift_upgrade(),
+		.giftResale = tl.data().is_stargift_resale(),
 		.reaction = tl.data().is_reaction(),
 		.refunded = tl.data().is_refund(),
 		.pending = tl.data().is_pending(),
@@ -336,12 +349,15 @@ void CreditsHistory::request(
 
 void CreditsHistory::requestSubscriptions(
 		const Data::CreditsStatusSlice::OffsetToken &token,
-		Fn<void(Data::CreditsStatusSlice)> done) {
+		Fn<void(Data::CreditsStatusSlice)> done,
+		bool missingBalance) {
 	if (_requestId) {
 		return;
 	}
 	_requestId = _api.request(MTPpayments_GetStarsSubscriptions(
-		MTP_flags(0),
+		MTP_flags(missingBalance
+			? MTPpayments_getStarsSubscriptions::Flag::f_missing_balance
+			: MTPpayments_getStarsSubscriptions::Flags(0)),
 		_peer->isSelf() ? MTP_inputPeerSelf() : _peer->input,
 		MTP_string(token)
 	)).done([=](const MTPpayments_StarsStatus &result) {
@@ -511,6 +527,18 @@ void EditCreditsSubscription(
 			MTP_string(id),
 			MTP_bool(cancel)
 	)).done(done).fail([=](const MTP::Error &e) { fail(e.type()); }).send();
+}
+
+MTPInputSavedStarGift InputSavedStarGiftId(
+		const Data::SavedStarGiftId &id,
+		const std::shared_ptr<Data::UniqueGift> &unique) {
+	return (!id && unique)
+		? MTP_inputSavedStarGiftSlug(MTP_string(unique->slug))
+		: id.isUser()
+		? MTP_inputSavedStarGiftUser(MTP_int(id.userMessageId().bare))
+		: MTP_inputSavedStarGiftChat(
+			id.chat()->input,
+			MTP_long(id.chatSavedId()));
 }
 
 } // namespace Api

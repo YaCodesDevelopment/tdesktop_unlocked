@@ -41,11 +41,14 @@ class WallPaper;
 class Session;
 struct UniqueGift;
 
-enum class CallFinishReason : char {
+enum class CallState : char {
 	Missed,
 	Busy,
 	Disconnected,
 	Hangup,
+	MigrateConferenceCall,
+	Invitation,
+	Active,
 };
 
 struct SharedContact final {
@@ -77,10 +80,12 @@ struct SharedContact final {
 };
 
 struct Call {
-	using FinishReason = CallFinishReason;
+	using State = CallState;
 
+	std::vector<not_null<PeerData*>> otherParticipants;
+	CallId conferenceId = 0;
 	int duration = 0;
-	FinishReason finishReason = FinishReason::Missed;
+	State state = State::Missed;
 	bool video = false;
 
 };
@@ -141,6 +146,8 @@ struct GiftCode {
 	std::shared_ptr<UniqueGift> unique;
 	TextWithEntities message;
 	ChannelData *channel = nullptr;
+	PeerData *channelFrom = nullptr;
+	uint64 channelSavedId = 0;
 	MsgId giveawayMsgId = 0;
 	MsgId upgradeMsgId = 0;
 	int starsConverted = 0;
@@ -176,6 +183,8 @@ public:
 	virtual std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) = 0;
 
 	virtual DocumentData *document() const;
+	virtual PhotoData *videoCover() const;
+	virtual TimeId videoTimestamp() const;
 	virtual bool hasQualitiesList() const;
 	virtual PhotoData *photo() const;
 	virtual WebPageData *webpage() const;
@@ -295,18 +304,26 @@ private:
 
 class MediaFile final : public Media {
 public:
+	struct Args {
+		crl::time ttlSeconds = 0;
+		PhotoData *videoCover = nullptr;
+		TimeId videoTimestamp = 0;
+		bool hasQualitiesList = false;
+		bool skipPremiumEffect = false;
+		bool spoiler = false;
+	};
+
 	MediaFile(
 		not_null<HistoryItem*> parent,
 		not_null<DocumentData*> document,
-		bool skipPremiumEffect,
-		bool hasQualitiesList,
-		bool spoiler,
-		crl::time ttlSeconds);
+		Args &&args);
 	~MediaFile();
 
 	std::unique_ptr<Media> clone(not_null<HistoryItem*> parent) override;
 
 	DocumentData *document() const override;
+	PhotoData *videoCover() const override;
+	TimeId videoTimestamp() const override;
 	bool hasQualitiesList() const override;
 
 	bool uploading() const override;
@@ -336,13 +353,16 @@ public:
 
 private:
 	not_null<DocumentData*> _document;
-	QString _emoji;
-	bool _skipPremiumEffect = false;
-	bool _hasQualitiesList = false;
-	bool _spoiler = false;
+	PhotoData *_videoCover = nullptr;
 
 	// Video (unsupported) / Voice / Round.
 	crl::time _ttlSeconds = 0;
+
+	QString _emoji;
+	TimeId _videoTimestamp = 0;
+	bool _skipPremiumEffect = false;
+	bool _hasQualitiesList = false;
+	bool _spoiler = false;
 
 };
 
@@ -446,9 +466,10 @@ public:
 		not_null<HistoryItem*> realParent,
 		HistoryView::Element *replacing = nullptr) override;
 
-	static QString Text(
+	[[nodiscard]] static QString Text(
 		not_null<HistoryItem*> item,
-		CallFinishReason reason,
+		CallState state,
+		bool conference,
 		bool video);
 
 private:
@@ -782,7 +803,12 @@ private:
 	not_null<HistoryItem*> item,
 	const MTPDmessageMediaPaidMedia &data);
 
-[[nodiscard]] Call ComputeCallData(const MTPDmessageActionPhoneCall &call);
+[[nodiscard]] Call ComputeCallData(
+	not_null<Session*> owner,
+	const MTPDmessageActionPhoneCall &call);
+[[nodiscard]] Call ComputeCallData(
+	not_null<Session*> owner,
+	const MTPDmessageActionConferenceCall &call);
 
 [[nodiscard]] GiveawayStart ComputeGiveawayStartData(
 	not_null<HistoryItem*> item,

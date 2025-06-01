@@ -52,7 +52,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "dialogs/dialogs_widget.h"
 #include "history/history_widget.h"
-#include "history/history_item_helpers.h" // GetErrorTextForSending.
+#include "history/history_item_helpers.h" // GetErrorForSending.
 #include "history/view/media/history_view_media.h"
 #include "history/view/history_view_service_message.h"
 #include "history/view/history_view_sublist_section.h"
@@ -556,15 +556,15 @@ bool MainWidget::setForwardDraft(
 	const auto history = thread->owningHistory();
 	const auto items = session().data().idsToItems(draft.ids);
 	const auto topicRootId = thread->topicRootId();
-	const auto error = GetErrorTextForSending(
+	const auto error = GetErrorForSending(
 		history->peer,
 		{
 			.topicRootId = topicRootId,
 			.forward = &items,
 			.ignoreSlowmodeCountdown = true,
 		});
-	if (!error.isEmpty()) {
-		_controller->show(Ui::MakeInformBox(error));
+	if (error) {
+		Data::ShowSendErrorToast(_controller, history->peer, error);
 		return false;
 	}
 
@@ -611,12 +611,12 @@ bool MainWidget::sendPaths(
 		not_null<Data::Thread*> thread,
 		const QStringList &paths) {
 	if (!Data::CanSendAnyOf(thread, Data::FilesSendRestrictions())) {
-		_controller->show(Ui::MakeInformBox(
-			tr::lng_forward_send_files_cant()));
+		_controller->showToast(
+			tr::lng_forward_send_files_cant(tr::now));
 		return false;
 	} else if (const auto error = Data::AnyFileRestrictionError(
 			thread->peer())) {
-		_controller->show(Ui::MakeInformBox(*error));
+		Data::ShowSendErrorToast(controller(), thread->peer(), error);
 		return false;
 	} else {
 		_controller->showThread(
@@ -659,12 +659,12 @@ bool MainWidget::filesOrForwardDrop(
 		}
 		return false;
 	} else if (!Data::CanSendAnyOf(thread, Data::FilesSendRestrictions())) {
-		_controller->show(Ui::MakeInformBox(
-			tr::lng_forward_send_files_cant()));
+		_controller->showToast(
+			tr::lng_forward_send_files_cant(tr::now));
 		return false;
 	} else if (const auto error = Data::AnyFileRestrictionError(
 			thread->peer())) {
-		_controller->show(Ui::MakeInformBox(*error));
+		Data::ShowSendErrorToast(_controller, thread->peer(), error);
 		return false;
 	} else {
 		_controller->showThread(
@@ -926,15 +926,15 @@ void MainWidget::setCurrentCall(Calls::Call *call) {
 	}
 	_currentCallLifetime.destroy();
 	_currentCall = call;
-	if (_currentCall) {
+	if (call) {
 		_callTopBar.destroy();
-		_currentCall->stateValue(
+		call->stateValue(
 		) | rpl::start_with_next([=](Calls::Call::State state) {
 			using State = Calls::Call::State;
 			if (state != State::Established) {
 				destroyCallTopBar();
 			} else if (!_callTopBar) {
-				createCallTopBar();
+				createCallTopBar(call, nullptr);
 			}
 		}, _currentCallLifetime);
 	} else {
@@ -948,7 +948,7 @@ void MainWidget::setCurrentGroupCall(Calls::GroupCall *call) {
 	}
 	_currentCallLifetime.destroy();
 	_currentGroupCall = call;
-	if (_currentGroupCall) {
+	if (call) {
 		_callTopBar.destroy();
 		_currentGroupCall->stateValue(
 		) | rpl::start_with_next([=](Calls::GroupCall::State state) {
@@ -960,7 +960,7 @@ void MainWidget::setCurrentGroupCall(Calls::GroupCall *call) {
 				&& state != State::Connecting) {
 				destroyCallTopBar();
 			} else if (!_callTopBar) {
-				createCallTopBar();
+				createCallTopBar(nullptr, call);
 			}
 		}, _currentCallLifetime);
 	} else {
@@ -968,15 +968,17 @@ void MainWidget::setCurrentGroupCall(Calls::GroupCall *call) {
 	}
 }
 
-void MainWidget::createCallTopBar() {
-	Expects(_currentCall != nullptr || _currentGroupCall != nullptr);
+void MainWidget::createCallTopBar(
+		Calls::Call *call,
+		Calls::GroupCall *group) {
+	Expects(call || group);
 
 	const auto show = controller()->uiShow();
 	_callTopBar.create(
 		this,
-		(_currentCall
-			? object_ptr<Calls::TopBar>(this, _currentCall, show)
-			: object_ptr<Calls::TopBar>(this, _currentGroupCall, show)));
+		(call
+			? object_ptr<Calls::TopBar>(this, call, show)
+			: object_ptr<Calls::TopBar>(this, group, show)));
 	_callTopBar->entity()->initBlobsUnder(this, _callTopBar->geometryValue());
 	_callTopBar->heightValue(
 	) | rpl::start_with_next([this](int value) {
@@ -1166,7 +1168,7 @@ float64 MainWidget::chatBackgroundProgress() const {
 	if (_background) {
 		if (_background->generating) {
 			return 1.;
-		} else if (const auto document = _background->data.document()) {
+		} else if (_background->data.document()) {
 			return _background->dataMedia->progress();
 		}
 	}
@@ -1347,6 +1349,7 @@ void MainWidget::showHistory(
 	}
 
 	if (peerId && params.activation != anim::activation::background) {
+		Core::App().hideMediaView();
 		_controller->window().activate();
 	}
 
@@ -1448,11 +1451,7 @@ void MainWidget::showHistory(
 		&& way != Way::Forward) {
 		ClearBotStartToken(_history->peer());
 	}
-	_history->showHistory(
-		peerId,
-		showAtMsgId,
-		params.highlightPart,
-		params.highlightPartOffsetHint);
+	_history->showHistory(peerId, showAtMsgId, params);
 	if (alreadyThatPeer && params.reapplyLocalDraft) {
 		_history->applyDraft(HistoryWidget::FieldHistoryAction::NewEntry);
 	}
@@ -2605,7 +2604,7 @@ auto MainWidget::thirdSectionForCurrentMainSection(
 		return std::make_shared<Info::Memento>(
 			peer,
 			Info::Memento::DefaultSection(peer));
-	} else if (const auto sublist = key.sublist()) {
+	} else if (key.sublist()) {
 		return std::make_shared<Info::Memento>(
 			session().user(),
 			Info::Memento::DefaultSection(session().user()));

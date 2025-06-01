@@ -191,7 +191,8 @@ MTPMessage PrepareLogMessage(const MTPMessage &message, TimeId newDate) {
 			MTPint(), // quick_reply_shortcut_id
 			MTP_long(data.veffect().value_or_empty()),
 			MTPFactCheck(),
-			MTPint()); // report_delivery_until_date
+			MTPint(), // report_delivery_until_date
+			MTP_long(data.vpaid_message_stars().value_or_empty()));
 	});
 }
 
@@ -830,6 +831,7 @@ void GenerateItems(
 	using LogChangeEmojiStatus = MTPDchannelAdminLogEventActionChangeEmojiStatus;
 	using LogToggleSignatureProfiles = MTPDchannelAdminLogEventActionToggleSignatureProfiles;
 	using LogParticipantSubExtend = MTPDchannelAdminLogEventActionParticipantSubExtend;
+	using LogToggleAutotranslation = MTPDchannelAdminLogEventActionToggleAutotranslation;
 
 	const auto session = &history->session();
 	const auto id = event.vid().v;
@@ -2003,17 +2005,19 @@ void GenerateItems(
 			return status.match([](
 					const MTPDemojiStatus &data) {
 				return data.vdocument_id().v;
+			}, [](const MTPDemojiStatusCollectible &data) {
+				return data.vdocument_id().v;
 			}, [](const MTPDemojiStatusEmpty &) {
 				return DocumentId();
-			}, [](const MTPDemojiStatusUntil &data) {
-				return data.vdocument_id().v;
+			}, [](const MTPDinputEmojiStatusCollectible &) {
+				return DocumentId();
 			});
 		};
 		const auto prevEmoji = parse(data.vprev_value());
 		const auto nextEmoji = parse(data.vnew_value());
 		const auto nextUntil = data.vnew_value().match([](
-				const MTPDemojiStatusUntil &data) {
-			return data.vuntil().v;
+				const MTPDemojiStatus &data) {
+			return TimeId(data.vuntil().value_or_empty());
 		}, [](const auto &) { return TimeId(); });
 
 		const auto text = !prevEmoji
@@ -2112,6 +2116,18 @@ void GenerateItems(
 			participantPeerLink);
 	};
 
+	const auto createToggleAutotranslation = [&](const LogToggleAutotranslation &action) {
+		const auto enabled = mtpIsTrue(action.vnew_value());
+		const auto text = (enabled
+			? tr::lng_admin_log_autotranslate_enabled
+			: tr::lng_admin_log_autotranslate_disabled)(
+				tr::now,
+				lt_from,
+				fromLinkText,
+				Ui::Text::WithEntities);
+		addSimpleServiceMessage(text);
+	};
+
 	action.match(
 		createChangeTitle,
 		createChangeAbout,
@@ -2162,7 +2178,8 @@ void GenerateItems(
 		createChangeWallpaper,
 		createChangeEmojiStatus,
 		createToggleSignatureProfiles,
-		createParticipantSubExtend);
+		createParticipantSubExtend,
+		createToggleAutotranslation);
 }
 
 } // namespace AdminLog

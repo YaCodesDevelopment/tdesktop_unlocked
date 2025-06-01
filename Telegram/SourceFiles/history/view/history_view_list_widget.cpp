@@ -44,6 +44,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_session_controller.h"
 #include "window/window_peer_menu.h"
 #include "main/main_session.h"
+#include "ui/layers/generic_box.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/toast/toast.h"
@@ -57,6 +58,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/ui_utility.h"
 #include "lang/lang_keys.h"
 #include "boxes/delete_messages_box.h"
+#include "boxes/moderate_messages_box.h"
 #include "boxes/premium_preview_box.h"
 #include "boxes/peers/edit_participant_box.h"
 #include "core/crash_reports.h"
@@ -1487,7 +1489,7 @@ void ListWidget::cancelSelection() {
 void ListWidget::selectItem(not_null<HistoryItem*> item) {
 	if (hasSelectRestriction()) {
 		return;
-	} else if (const auto view = viewForItem(item)) {
+	} else if ([[maybe_unused]] const auto view = viewForItem(item)) {
 		clearTextSelection();
 		changeSelection(
 			_selected,
@@ -1500,7 +1502,7 @@ void ListWidget::selectItem(not_null<HistoryItem*> item) {
 void ListWidget::selectItemAsGroup(not_null<HistoryItem*> item) {
 	if (hasSelectRestriction()) {
 		return;
-	} else if (const auto view = viewForItem(item)) {
+	} else if ([[maybe_unused]] const auto view = viewForItem(item)) {
 		clearTextSelection();
 		changeSelectionAsGroup(
 			_selected,
@@ -1644,8 +1646,9 @@ bool ListWidget::showCopyRestrictionForSelected() {
 }
 
 bool ListWidget::hasSelectRestriction() const {
-	return _delegate->listSelectRestrictionType()
-		!= CopyRestrictionType::None;
+	return session().frozen()
+		|| (_delegate->listSelectRestrictionType()
+			!= CopyRestrictionType::None);
 }
 
 Element *ListWidget::lookupItemByY(int y) const {
@@ -2809,7 +2812,9 @@ void ListWidget::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 	}
 
 	const auto link = ClickHandler::getActive();
-	if (link
+	if (controller()->showFrozenError()) {
+		return;
+	} else if (link
 		&& !link->property(
 			kSendReactionEmojiProperty).value<Data::ReactionId>().empty()
 		&& _reactionsManager
@@ -2952,6 +2957,7 @@ void ListWidget::mousePressEvent(QMouseEvent *e) {
 		e->accept();
 		return; // ignore mouse press, that was hiding context menu
 	}
+	_mouseActive = true;
 	mouseActionStart(e->globalPos(), e->button());
 }
 
@@ -3159,6 +3165,7 @@ void ListWidget::mouseMoveEvent(QMouseEvent *e) {
 		mouseReleaseEvent(e);
 	}
 	if (reallyMoved) {
+		_mouseActive = true;
 		lastGlobalPosition = e->globalPos();
 		if (!buttonsPressed
 			|| (_scrollDateLink
@@ -3189,6 +3196,7 @@ rpl::producer<bool> ListWidget::touchMaybeSelectingValue() const {
 }
 
 void ListWidget::enterEventHook(QEnterEvent *e) {
+	_mouseActive = true;
 	mouseActionUpdate(QCursor::pos());
 	return TWidget::enterEventHook(e);
 }
@@ -3209,6 +3217,7 @@ void ListWidget::leaveEventHook(QEvent *e) {
 		_cursor = style::cur_default;
 		setCursor(_cursor);
 	}
+	_mouseActive = false;
 	return TWidget::leaveEventHook(e);
 }
 
@@ -3641,6 +3650,10 @@ int ListWidget::SelectionViewOffset(
 
 
 void ListWidget::mouseActionUpdate() {
+	if (!_mouseActive && !window()->isActiveWindow()) {
+		return;
+	}
+
 	auto mousePosition = mapFromGlobal(_mousePosition);
 	auto point = QPoint(
 		std::clamp(mousePosition.x(), 0, width()),
@@ -4064,7 +4077,8 @@ void ListWidget::refreshAttachmentsFromTill(int from, int till) {
 			const auto viewDate = view->dateTime();
 			const auto nextDate = next->dateTime();
 			next->setDisplayDate(_context != Context::ShortcutMessages
-				&& nextDate.date() != viewDate.date());
+				&& (nextDate.date() != viewDate.date()
+					|| view->data()->hideDisplayDate()));
 			auto attached = next->computeIsAttachToPrevious(view);
 			next->setAttachToPrevious(attached, view);
 			view->setAttachToNext(attached, next);
@@ -4277,6 +4291,11 @@ void ListWidget::overrideIsChatWide(bool isWide) {
 ListWidget::~ListWidget() {
 	// Destroy child widgets first, because they may invoke leaveEvent-s.
 	_emptyInfo = nullptr;
+	if (const auto raw = _menu.release()) {
+		crl::on_main(raw, [=] {
+			delete raw;
+		});
+	}
 }
 
 void ConfirmDeleteSelectedItems(not_null<ListWidget*> widget) {
@@ -4284,18 +4303,30 @@ void ConfirmDeleteSelectedItems(not_null<ListWidget*> widget) {
 	if (items.empty()) {
 		return;
 	}
+	const auto controller = widget->controller();
+	const auto owner = &controller->session().data();
+	auto historyItems = std::vector<not_null<HistoryItem*>>();
+	historyItems.reserve(items.size());
 	for (const auto &item : items) {
 		if (!item.canDelete) {
 			return;
+		} else if (const auto i = owner->message(item.msgId)) {
+			historyItems.push_back(i);
 		}
 	}
-	auto box = Box<DeleteMessagesBox>(
-		&widget->session(),
-		widget->getSelectedIds());
-	box->setDeleteConfirmedCallback(crl::guard(widget, [=] {
+	const auto confirmed = crl::guard(widget, [=] {
 		widget->cancelSelection();
-	}));
-	widget->controller()->show(std::move(box));
+	});
+	if (CanCreateModerateMessagesBox(historyItems)) {
+		controller->show(
+			Box(CreateModerateMessagesBox, historyItems, confirmed));
+	} else {
+		auto box = Box<DeleteMessagesBox>(
+			&widget->session(),
+			widget->getSelectedIds());
+		box->setDeleteConfirmedCallback(confirmed);
+		controller->show(std::move(box));
+	}
 }
 
 void ConfirmForwardSelectedItems(not_null<ListWidget*> widget) {

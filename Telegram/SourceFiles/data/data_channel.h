@@ -14,6 +14,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer_bot_commands.h"
 #include "data/data_user_names.h"
 
+class ChannelData;
+
 struct ChannelLocation {
 	QString address;
 	Data::LocationPoint point;
@@ -69,6 +71,9 @@ enum class ChannelDataFlag : uint64 {
 	PaidMediaAllowed = (1ULL << 33),
 	CanViewCreditsRevenue = (1ULL << 34),
 	SignatureProfiles = (1ULL << 35),
+	StargiftsAvailable = (1ULL << 36),
+	PaidMessagesAvailable = (1ULL << 37),
+	AutoTranslation = (1ULL << 38),
 };
 inline constexpr bool is_flag_type(ChannelDataFlag) { return true; };
 using ChannelDataFlags = base::flags<ChannelDataFlag>;
@@ -149,6 +154,9 @@ private:
 	ChannelLocation _location;
 	Data::ChatBotCommands _botCommands;
 	std::unique_ptr<Data::Forum> _forum;
+	int _starsPerMessage = 0;
+
+	friend class ChannelData;
 
 };
 
@@ -253,6 +261,12 @@ public:
 	[[nodiscard]] bool viewForumAsMessages() const {
 		return flags() & Flag::ViewAsMessages;
 	}
+	[[nodiscard]] bool stargiftsAvailable() const {
+		return flags() & Flag::StargiftsAvailable;
+	}
+	[[nodiscard]] bool paidMessagesAvailable() const {
+		return flags() & Flag::PaidMessagesAvailable;
+	}
 
 	[[nodiscard]] static ChatRestrictionsInfo KickedRestrictedRights(
 		not_null<PeerData*> participant);
@@ -307,6 +321,9 @@ public:
 	}
 	[[nodiscard]] bool antiSpamMode() const {
 		return flags() & Flag::AntiSpam;
+	}
+	[[nodiscard]] bool autoTranslation() const {
+		return flags() & Flag::AutoTranslation;
 	}
 
 	[[nodiscard]] auto adminRights() const {
@@ -369,6 +386,7 @@ public:
 	[[nodiscard]] bool canViewAdmins() const;
 	[[nodiscard]] bool canViewBanned() const;
 	[[nodiscard]] bool canEditSignatures() const;
+	[[nodiscard]] bool canEditAutoTranslate() const;
 	[[nodiscard]] bool canEditStickers() const;
 	[[nodiscard]] bool canEditEmoji() const;
 	[[nodiscard]] bool canDelete() const;
@@ -391,9 +409,9 @@ public:
 	void setLocation(const MTPChannelLocation &data);
 	[[nodiscard]] const ChannelLocation *getLocation() const;
 
-	void setLinkedChat(ChannelData *linked);
-	[[nodiscard]] ChannelData *linkedChat() const;
-	[[nodiscard]] bool linkedChatKnown() const;
+	void setDiscussionLink(ChannelData *link);
+	[[nodiscard]] ChannelData *discussionLink() const;
+	[[nodiscard]] bool discussionLinkKnown() const;
 
 	void ptsInit(int32 pts) {
 		_ptsWaiter.init(pts);
@@ -451,6 +469,12 @@ public:
 	void setSlowmodeSeconds(int seconds);
 	[[nodiscard]] TimeId slowmodeLastMessage() const;
 	void growSlowmodeLastMessage(TimeId when);
+
+	void setStarsPerMessage(int stars);
+	[[nodiscard]] int starsPerMessage() const;
+
+	[[nodiscard]] int peerGiftsCount() const;
+	void setPeerGiftsCount(int count);
 
 	[[nodiscard]] int boostsApplied() const;
 	[[nodiscard]] int boostsUnrestrict() const;
@@ -522,6 +546,7 @@ private:
 		std::vector<Data::UnavailableReason> &&reasons) override;
 
 	Flags _flags = ChannelDataFlags(Flag::Forbidden);
+	int _peerGiftsCount = 0;
 
 	PtsWaiter _ptsWaiter;
 
@@ -545,7 +570,7 @@ private:
 	std::vector<Data::UnavailableReason> _unavailableReasons;
 	std::unique_ptr<InvitePeek> _invitePeek;
 	QString _inviteLink;
-	std::optional<ChannelData*> _linkedChat;
+	std::optional<ChannelData*> _discussionLink;
 
 	Data::AllowedReactions _allowedReactions;
 

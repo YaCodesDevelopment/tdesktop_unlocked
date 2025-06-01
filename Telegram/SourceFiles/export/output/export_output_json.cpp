@@ -385,6 +385,7 @@ QByteArray SerializeMessage(
 	};
 	const auto pushPhoto = [&](const Image &image) {
 		pushPath(image.file, "photo");
+		push("photo_file_size", image.file.size);
 		if (image.width && image.height) {
 			push("width", image.width);
 			push("height", image.height);
@@ -460,20 +461,27 @@ QByteArray SerializeMessage(
 		}
 	}, [&](const ActionPhoneCall &data) {
 		pushActor();
-		pushAction("phone_call");
+		pushAction(data.conferenceId ? "conference_call" : "phone_call");
 		if (data.duration) {
 			push("duration_seconds", data.duration);
 		}
-		using Reason = ActionPhoneCall::DiscardReason;
-		push("discard_reason", [&] {
-			switch (data.discardReason) {
-			case Reason::Busy: return "busy";
-			case Reason::Disconnect: return "disconnect";
-			case Reason::Hangup: return "hangup";
-			case Reason::Missed: return "missed";
-			}
-			return "";
-		}());
+		using State = ActionPhoneCall::State;
+		if (data.conferenceId) {
+			push("is_active", data.state == State::Active);
+			push("is_missed", data.state == State::Missed);
+		} else {
+			push("discard_reason", [&] {
+				switch (data.state) {
+				case State::Busy: return "busy";
+				case State::Disconnect: return "disconnect";
+				case State::Hangup: return "hangup";
+				case State::Missed: return "missed";
+				case State::MigrateConferenceCall:
+					return "migrate_conference_all";
+				}
+				return "";
+			}());
+		}
 	}, [&](const ActionScreenshotTaken &data) {
 		pushActor();
 		pushAction("take_screenshot");
@@ -662,6 +670,15 @@ QByteArray SerializeMessage(
 		push("is_limited", data.limited);
 		push("is_anonymous", data.anonymous);
 		pushBare("gift_text", SerializeText(context, data.text));
+	}, [&](const ActionPaidMessagesRefunded &data) {
+		pushActor();
+		pushAction("paid_messages_refund");
+		push("messages_count", data.messages);
+		push("stars_count", data.stars);
+	}, [&](const ActionPaidMessagesPrice &data) {
+		pushActor();
+		pushAction("paid_messages_price_change");
+		push("price_stars", data.stars);
 	}, [](v::null_t) {});
 
 	if (v::is_null(message.action.content)) {
@@ -696,8 +713,10 @@ QByteArray SerializeMessage(
 	}, [&](const Document &data) {
 		pushPath(data.file, "file");
 		push("file_name", data.name);
+		push("file_size", data.file.size);
 		if (data.thumb.width > 0) {
 			pushPath(data.thumb.file, "thumbnail");
+			push("thumbnail_file_size", data.thumb.file.size);
 		}
 		const auto pushType = [&](const QByteArray &value) {
 			push("media_type", value);
@@ -739,6 +758,7 @@ QByteArray SerializeMessage(
 		}));
 		if (!data.vcard.content.isEmpty()) {
 			pushPath(data.vcard, "contact_vcard");
+			push("contact_vcard_file_size", data.vcard.size);
 		}
 	}, [&](const GeoPoint &data) {
 		pushBare(

@@ -7,7 +7,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_channel.h"
 
+#include "api/api_credits.h"
 #include "api/api_global_privacy.h"
+#include "api/api_statistics.h"
+#include "base/timer_rpl.h"
+#include "data/components/credits.h"
 #include "data/data_changes.h"
 #include "data/data_channel_admins.h"
 #include "data/data_user.h"
@@ -30,6 +34,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_chat_invite.h"
 #include "api/api_invite_links.h"
 #include "apiwrap.h"
+#include "storage/storage_account.h"
 #include "ui/unread_badge.h"
 #include "window/notifications_manager.h"
 
@@ -270,22 +275,22 @@ const ChannelLocation *ChannelData::getLocation() const {
 	return mgInfo ? mgInfo->getLocation() : nullptr;
 }
 
-void ChannelData::setLinkedChat(ChannelData *linked) {
-	if (_linkedChat != linked) {
-		_linkedChat = linked;
+void ChannelData::setDiscussionLink(ChannelData *linked) {
+	if (_discussionLink != linked) {
+		_discussionLink = linked;
 		if (const auto history = owner().historyLoaded(this)) {
 			history->forceFullResize();
 		}
-		session().changes().peerUpdated(this, UpdateFlag::ChannelLinkedChat);
+		session().changes().peerUpdated(this, UpdateFlag::DiscussionLink);
 	}
 }
 
-ChannelData *ChannelData::linkedChat() const {
-	return _linkedChat.value_or(nullptr);
+ChannelData *ChannelData::discussionLink() const {
+	return _discussionLink.value_or(nullptr);
 }
 
-bool ChannelData::linkedChatKnown() const {
-	return _linkedChat.has_value();
+bool ChannelData::discussionLinkKnown() const {
+	return _discussionLink.has_value();
 }
 
 void ChannelData::setMembersCount(int newMembersCount) {
@@ -647,7 +652,11 @@ bool ChannelData::canEditPermissions() const {
 }
 
 bool ChannelData::canEditSignatures() const {
-	return isChannel() && canEditInformation();
+	return isBroadcast() && canEditInformation();
+}
+
+bool ChannelData::canEditAutoTranslate() const {
+	return isBroadcast() && canEditInformation();
 }
 
 bool ChannelData::canEditPreHistoryHidden() const {
@@ -859,6 +868,32 @@ void ChannelData::growSlowmodeLastMessage(TimeId when) {
 	session().changes().peerUpdated(this, UpdateFlag::Slowmode);
 }
 
+int ChannelData::starsPerMessage() const {
+	if (const auto info = mgInfo.get()) {
+		return info->_starsPerMessage;
+	}
+	return 0;
+}
+
+void ChannelData::setStarsPerMessage(int stars) {
+	if (mgInfo && starsPerMessage() != stars) {
+		mgInfo->_starsPerMessage = stars;
+		session().changes().peerUpdated(this, UpdateFlag::StarsPerMessage);
+	}
+	checkTrustedPayForMessage();
+}
+
+int ChannelData::peerGiftsCount() const {
+	return _peerGiftsCount;
+}
+
+void ChannelData::setPeerGiftsCount(int count) {
+	if (_peerGiftsCount != count) {
+		_peerGiftsCount = count;
+		session().changes().peerUpdated(this, UpdateFlag::PeerGifts);
+	}
+}
+
 int ChannelData::boostsApplied() const {
 	if (const auto info = mgInfo.get()) {
 		return info->boostsApplied;
@@ -928,7 +963,7 @@ QString ChannelData::invitePeekHash() const {
 }
 
 void ChannelData::privateErrorReceived() {
-	if (const auto expires = invitePeekExpires()) {
+	if (invitePeekExpires()) {
 		const auto hash = invitePeekHash();
 		for (const auto &window : session().windows()) {
 			clearInvitePeek();
@@ -973,10 +1008,13 @@ void ChannelData::setGroupCall(
 			data.vid().v,
 			data.vaccess_hash().v,
 			scheduleDate,
-			rtmp);
+			rtmp,
+			false); // conference
 		owner().registerGroupCall(_call.get());
 		session().changes().peerUpdated(this, UpdateFlag::GroupCall);
 		addFlags(Flag::CallActive);
+	}, [&](const auto &) {
+		clearGroupCall();
 	});
 }
 
@@ -1001,7 +1039,7 @@ PeerId ChannelData::groupCallDefaultJoinAs() const {
 void ChannelData::setAllowedReactions(Data::AllowedReactions value) {
 	if (_allowedReactions != value) {
 		if (value.paidEnabled) {
-			session().api().globalPrivacy().loadPaidReactionAnonymous();
+			session().api().globalPrivacy().loadPaidReactionShownPeer();
 		}
 		const auto enabled = [](const Data::AllowedReactions &allowed) {
 			return (allowed.type != Data::AllowedReactionsType::Some)
@@ -1138,7 +1176,9 @@ void ApplyChannelUpdate(
 		| Flag::ViewAsMessages
 		| Flag::CanViewRevenue
 		| Flag::PaidMediaAllowed
-		| Flag::CanViewCreditsRevenue;
+		| Flag::CanViewCreditsRevenue
+		| Flag::StargiftsAvailable
+		| Flag::PaidMessagesAvailable;
 	channel->setFlags((channel->flags() & ~mask)
 		| (update.is_can_set_username() ? Flag::CanSetUsername : Flag())
 		| (update.is_can_view_participants()
@@ -1159,6 +1199,12 @@ void ApplyChannelUpdate(
 		| (update.is_can_view_revenue() ? Flag::CanViewRevenue : Flag())
 		| (update.is_can_view_stars_revenue()
 			? Flag::CanViewCreditsRevenue
+			: Flag())
+		| (update.is_stargifts_available()
+			? Flag::StargiftsAvailable
+			: Flag())
+		| (update.is_paid_messages_available()
+			? Flag::PaidMessagesAvailable
 			: Flag()));
 	channel->setUserpicPhoto(update.vchat_photo());
 	if (const auto migratedFrom = update.vmigrated_from_chat_id()) {
@@ -1172,6 +1218,7 @@ void ApplyChannelUpdate(
 	channel->setRestrictedCount(update.vbanned_count().value_or_empty());
 	channel->setKickedCount(update.vkicked_count().value_or_empty());
 	channel->setSlowmodeSeconds(update.vslowmode_seconds().value_or_empty());
+	channel->setPeerGiftsCount(update.vstargifts_count().value_or_empty());
 	if (const auto next = update.vslowmode_next_send_date()) {
 		channel->growSlowmodeLastMessage(
 			next->v - channel->slowmodeSeconds());
@@ -1189,9 +1236,9 @@ void ApplyChannelUpdate(
 		channel->setLocation(MTP_channelLocationEmpty());
 	}
 	if (const auto chat = update.vlinked_chat_id()) {
-		channel->setLinkedChat(channel->owner().channelLoaded(chat->v));
+		channel->setDiscussionLink(channel->owner().channelLoaded(chat->v));
 	} else {
-		channel->setLinkedChat(nullptr);
+		channel->setDiscussionLink(nullptr);
 	}
 	if (const auto history = channel->owner().historyLoaded(channel)) {
 		if (const auto available = update.vavailable_min_id()) {
@@ -1311,6 +1358,41 @@ void ApplyChannelUpdate(
 			Data::WallPaper::Create(&channel->session(), *paper));
 	} else {
 		channel->setWallPaper({});
+	}
+
+	if ((channel->flags() & Flag::CanViewRevenue)
+		|| (channel->flags() & Flag::CanViewCreditsRevenue)) {
+		static constexpr auto kTimeout = crl::time(60000);
+		const auto id = channel->id;
+		const auto weak = base::make_weak(&channel->session());
+		const auto creditsLoadLifetime = std::make_shared<rpl::lifetime>();
+		const auto creditsLoad
+			= creditsLoadLifetime->make_state<Api::CreditsStatus>(channel);
+		creditsLoad->request({}, [=](Data::CreditsStatusSlice slice) {
+			if (const auto strong = weak.get()) {
+				strong->credits().apply(id, slice.balance);
+			}
+			creditsLoadLifetime->destroy();
+		});
+		base::timer_once(kTimeout) | rpl::start_with_next([=] {
+			creditsLoadLifetime->destroy();
+		}, *creditsLoadLifetime);
+		const auto currencyLoadLifetime = std::make_shared<rpl::lifetime>();
+		const auto currencyLoad
+			= currencyLoadLifetime->make_state<Api::EarnStatistics>(channel);
+		const auto apply = [=](Data::EarnInt balance) {
+			if (const auto strong = weak.get()) {
+				strong->credits().applyCurrency(id, balance);
+			}
+			currencyLoadLifetime->destroy();
+		};
+		currencyLoad->request() | rpl::start_with_error_done(
+			[=](const QString &error) { apply(0); },
+			[=] { apply(currencyLoad->data().currentBalance); },
+			*currencyLoadLifetime);
+		base::timer_once(kTimeout) | rpl::start_with_next([=] {
+			currencyLoadLifetime->destroy();
+		}, *currencyLoadLifetime);
 	}
 
 	// For clearUpTill() call.

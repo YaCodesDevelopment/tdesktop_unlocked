@@ -7,9 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "main/main_app_config.h"
 
+#include "api/api_authorizations.h"
 #include "apiwrap.h"
 #include "base/call_delayed.h"
 #include "main/main_account.h"
+#include "main/main_session.h"
+#include "data/data_session.h"
 #include "ui/chat/chat_style.h"
 
 namespace Main {
@@ -24,6 +27,7 @@ AppConfig::AppConfig(not_null<Account*> account) : _account(account) {
 	) | rpl::filter([=](Session *session) {
 		return (session != nullptr);
 	}) | rpl::start_with_next([=] {
+		_lastFrozenRefresh = 0;
 		refresh();
 	}, _lifetime);
 }
@@ -35,6 +39,18 @@ void AppConfig::start() {
 	) | rpl::start_with_next([=](not_null<MTP::Instance*> instance) {
 		_api.emplace(instance);
 		refresh();
+
+		_frozenTrackLifetime = instance->frozenErrorReceived(
+		) | rpl::start_with_next([=] {
+			if (!get<int>(u"freeze_since_date"_q, 0)) {
+				const auto now = crl::now();
+				if (!_lastFrozenRefresh
+					|| now > _lastFrozenRefresh + kRefreshTimeout) {
+					_lastFrozenRefresh = now;
+					refresh();
+				}
+			}
+		});
 	}, _lifetime);
 }
 
@@ -71,6 +87,57 @@ int AppConfig::starrefCommissionMin() const {
 
 int AppConfig::starrefCommissionMax() const {
 	return get<int>(u"starref_max_commission_permille"_q, 900);
+}
+
+float64 AppConfig::starsWithdrawRate() const {
+	return get<float64>(u"stars_usd_withdraw_rate_x1000"_q, 1300) / 1000.;
+}
+
+bool AppConfig::paidMessagesAvailable() const {
+	return get<bool>(u"stars_paid_messages_available"_q, false);
+}
+
+int AppConfig::paidMessageStarsMax() const {
+	return get<int>(u"stars_paid_message_amount_max"_q, 10'000);
+}
+
+int AppConfig::paidMessageCommission() const {
+	return get<int>(u"stars_paid_message_commission_permille"_q, 850);
+}
+
+int AppConfig::pinnedGiftsLimit() const {
+	return get<int>(u"stargifts_pinned_to_top_limit"_q, 6);
+}
+
+bool AppConfig::callsDisabledForSession() const {
+	const auto authorizations = _account->sessionExists()
+		? &_account->session().api().authorizations()
+		: nullptr;
+	return get<bool>(
+		u"call_requests_disabled"_q,
+		authorizations->callsDisabledHere());
+}
+
+int AppConfig::confcallSizeLimit() const {
+	return get<int>(
+		u"conference_call_size_limit"_q,
+		_account->mtp().isTestMode() ? 5 : 100);
+}
+
+bool AppConfig::confcallPrioritizeVP8() const {
+	return get<bool>(u"confcall_use_vp8"_q, false);
+}
+
+int AppConfig::giftResalePriceMax() const {
+	return get<int>(u"stars_stargift_resale_amount_max"_q, 35000);
+}
+
+int AppConfig::giftResalePriceMin() const {
+	return get<int>(u"stars_stargift_resale_amount_min"_q, 125);
+}
+
+int AppConfig::giftResaleReceiveThousandths() const {
+	return get<int>(u"stars_stargift_resale_commission_permille"_q, 800);
 }
 
 void AppConfig::refresh(bool force) {
@@ -253,34 +320,6 @@ std::vector<int> AppConfig::getIntArray(
 			return std::move(fallback);
 		});
 	});
-}
-
-bool AppConfig::suggestionCurrent(const QString &key) const {
-	return !_dismissedSuggestions.contains(key)
-		&& ranges::contains(
-			get<std::vector<QString>>(
-				u"pending_suggestions"_q,
-				std::vector<QString>()),
-			key);
-}
-
-rpl::producer<> AppConfig::suggestionRequested(const QString &key) const {
-	return value(
-	) | rpl::filter([=] {
-		return suggestionCurrent(key);
-	});
-}
-
-void AppConfig::dismissSuggestion(const QString &key) {
-	Expects(_api.has_value());
-
-	if (!_dismissedSuggestions.emplace(key).second) {
-		return;
-	}
-	_api->request(MTPhelp_DismissSuggestion(
-		MTP_inputPeerEmpty(),
-		MTP_string(key)
-	)).send();
 }
 
 bool AppConfig::newRequirePremiumFree() const {

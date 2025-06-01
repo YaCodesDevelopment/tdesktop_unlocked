@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "dialogs/dialogs_main_list.h"
 #include "data/data_groups.h"
 #include "data/data_cloud_file.h"
+#include "data/data_star_gift.h"
 #include "history/history_location_manager.h"
 #include "base/timer.h"
 
@@ -71,6 +72,7 @@ class BusinessInfo;
 struct ReactionId;
 struct UnavailableReason;
 struct CreditsStatusSlice;
+struct UniqueGift;
 
 struct RepliesReadTillUpdate {
 	FullMsgId id;
@@ -83,10 +85,15 @@ struct GiftUpdate {
 		Save,
 		Unsave,
 		Convert,
+		Transfer,
 		Delete,
+		Pin,
+		Unpin,
+		ResaleChange,
 	};
 
-	FullMsgId itemId;
+	Data::SavedStarGiftId id;
+	QString slug;
 	Action action = {};
 };
 
@@ -225,22 +232,39 @@ public:
 
 	void registerGroupCall(not_null<GroupCall*> call);
 	void unregisterGroupCall(not_null<GroupCall*> call);
-	GroupCall *groupCall(CallId callId) const;
+	[[nodiscard]] GroupCall *groupCall(CallId callId) const;
+
+	[[nodiscard]] std::shared_ptr<GroupCall> sharedConferenceCall(
+		CallId id,
+		uint64 accessHash);
+	[[nodiscard]] std::shared_ptr<GroupCall> sharedConferenceCallFind(
+		const MTPUpdates &response);
 
 	void watchForOffline(not_null<UserData*> user, TimeId now = 0);
 	void maybeStopWatchForOffline(not_null<UserData*> user);
 
 	[[nodiscard]] auto invitedToCallUsers(CallId callId) const
-		-> const base::flat_set<not_null<UserData*>> &;
+		-> const base::flat_map<not_null<UserData*>, bool> &;
 	void registerInvitedToCallUser(
 		CallId callId,
 		not_null<PeerData*> peer,
-		not_null<UserData*> user);
-	void unregisterInvitedToCallUser(CallId callId, not_null<UserData*> user);
+		not_null<UserData*> user,
+		bool calling);
+	void registerInvitedToCallUser(
+		CallId callId,
+		GroupCall *call,
+		not_null<UserData*> user,
+		bool calling);
+	void unregisterInvitedToCallUser(
+		CallId callId,
+		not_null<UserData*> user,
+		bool onlyStopCalling);
 
 	struct InviteToCall {
 		CallId id = 0;
 		not_null<UserData*> user;
+		bool calling = false;
+		bool removed = false;
 	};
 	[[nodiscard]] rpl::producer<InviteToCall> invitesToCalls() const {
 		return _invitesToCalls.events();
@@ -336,7 +360,7 @@ public:
 	void notifyPinnedDialogsOrderUpdated();
 	[[nodiscard]] rpl::producer<> pinnedDialogsOrderUpdated() const;
 
-	using CreditsSubsRebuilder = rpl::event_stream<Data::CreditsStatusSlice>;
+	using CreditsSubsRebuilder = rpl::event_stream<CreditsStatusSlice>;
 	using CreditsSubsRebuilderPtr = std::shared_ptr<CreditsSubsRebuilder>;
 	[[nodiscard]] CreditsSubsRebuilderPtr createCreditsSubsRebuilder();
 	[[nodiscard]] CreditsSubsRebuilderPtr activeCreditsSubsRebuilder() const;
@@ -422,7 +446,7 @@ public:
 	[[nodiscard]] const std::vector<Dialogs::Key> &pinnedChatsOrder(
 		FilterId filterId) const;
 	[[nodiscard]] const std::vector<Dialogs::Key> &pinnedChatsOrder(
-		not_null<Data::SavedMessages*> saved) const;
+		not_null<SavedMessages*> saved) const;
 	void setChatPinned(Dialogs::Key key, FilterId filterId, bool pinned);
 	void setPinnedFromEntryList(Dialogs::Key key, bool pinned);
 	void clearPinnedChats(Folder *folder);
@@ -430,7 +454,7 @@ public:
 		Folder *folder,
 		const QVector<MTPDialogPeer> &list);
 	void applyPinnedTopics(
-		not_null<Data::Forum*> forum,
+		not_null<Forum*> forum,
 		const QVector<MTPint> &list);
 	void reorderTwoPinnedChats(
 		FilterId filterId,
@@ -624,9 +648,11 @@ public:
 		WebPageCollage &&collage,
 		std::unique_ptr<Iv::Data> iv,
 		std::unique_ptr<WebPageStickerSet> stickerSet,
+		std::shared_ptr<UniqueGift> uniqueGift,
 		int duration,
 		const QString &author,
 		bool hasLargeMedia,
+		bool photoIsVideoCover,
 		TimeId pendingTill);
 
 	[[nodiscard]] not_null<GameData*> game(GameId id);
@@ -775,11 +801,6 @@ public:
 	void setMimeForwardIds(MessageIdsList &&list);
 	MessageIdsList takeMimeForwardIds();
 
-	void setTopPromoted(
-		History *promoted,
-		const QString &type,
-		const QString &message);
-
 	bool updateWallpapers(const MTPaccount_WallPapers &data);
 	void removeWallpaper(const WallPaper &paper);
 	const std::vector<WallPaper> &wallpapers() const;
@@ -908,9 +929,11 @@ private:
 		WebPageCollage &&collage,
 		std::unique_ptr<Iv::Data> iv,
 		std::unique_ptr<WebPageStickerSet> stickerSet,
+		std::shared_ptr<UniqueGift> uniqueGift,
 		int duration,
 		const QString &author,
 		bool hasLargeMedia,
+		bool photoIsVideoCover,
 		TimeId pendingTill);
 
 	void gameApplyFields(
@@ -1082,18 +1105,17 @@ private:
 
 	base::flat_set<not_null<ViewElement*>> _heavyViewParts;
 
-	base::flat_map<uint64, not_null<GroupCall*>> _groupCalls;
+	base::flat_map<CallId, not_null<GroupCall*>> _groupCalls;
+	base::flat_map<CallId, std::weak_ptr<GroupCall>> _conferenceCalls;
 	rpl::event_stream<InviteToCall> _invitesToCalls;
 	base::flat_map<
-		uint64,
-		base::flat_set<not_null<UserData*>>> _invitedToCallUsers;
+		CallId,
+		base::flat_map<not_null<UserData*>, bool>> _invitedToCallUsers;
 
 	base::flat_set<not_null<ViewElement*>> _shownSpoilers;
 	base::flat_map<
 		ReactionId,
 		base::flat_set<not_null<ViewElement*>>> _viewsByTag;
-
-	History *_topPromoted = nullptr;
 
 	std::unordered_map<PeerId, std::unique_ptr<PeerData>> _peers;
 

@@ -37,10 +37,7 @@ void Credits::apply(const MTPDupdateStarsBalance &data) {
 
 rpl::producer<float64> Credits::rateValue(
 		not_null<PeerData*> ownedBotOrChannel) {
-	return rpl::single(
-		_session->appConfig().get<float64>(
-			u"stars_usd_withdraw_rate_x1000"_q,
-			1200) / 1000.);
+	return rpl::single(_session->appConfig().starsWithdrawRate());
 }
 
 void Credits::load(bool force) {
@@ -138,10 +135,17 @@ void Credits::apply(StarsAmount balance) {
 
 void Credits::apply(PeerId peerId, StarsAmount balance) {
 	_cachedPeerBalances[peerId] = balance;
+	_refreshedByPeerId.fire_copy(peerId);
 }
 
 void Credits::applyCurrency(PeerId peerId, uint64 balance) {
 	_cachedPeerCurrencyBalances[peerId] = balance;
+	_refreshedByPeerId.fire_copy(peerId);
+}
+
+rpl::producer<> Credits::refreshedByPeerId(PeerId peerId) {
+	return _refreshedByPeerId.events(
+	) | rpl::filter(rpl::mappers::_1 == peerId) | rpl::to_empty;
 }
 
 } // namespace Data

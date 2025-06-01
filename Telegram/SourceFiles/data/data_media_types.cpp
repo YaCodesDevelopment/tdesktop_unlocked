@@ -68,6 +68,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_user.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
+#include "calls/calls_instance.h"
 #include "core/application.h"
 #include "core/click_handler_types.h" // ClickHandlerContext
 #include "lang/lang_keys.h"
@@ -171,8 +172,19 @@ struct AlbumCounts {
 }
 
 template <typename MediaType>
-[[nodiscard]] uint64 CountCacheKey(not_null<MediaType*> data, bool spoiler) {
-	return (reinterpret_cast<uint64>(data.get()) & ~1) | (spoiler ? 1 : 0);
+[[nodiscard]] uint64 CountCacheKey(
+		not_null<MediaType*> data,
+		ImageRoundRadius radius,
+		bool spoiler) {
+	return (reinterpret_cast<uint64>(data.get()) & ~3)
+		| ((radius == ImageRoundRadius::Ellipse) ? 2 : 0)
+		| (spoiler ? 1 : 0);
+}
+
+[[nodiscard]] uint64 SimpleCacheKey(ImageRoundRadius radius, bool spoiler) {
+	return uint64()
+		| ((radius == ImageRoundRadius::Ellipse) ? 2 : 0)
+		| (spoiler ? 1 : 0);
 }
 
 [[nodiscard]] ItemPreviewImage PreparePhotoPreviewImage(
@@ -181,7 +193,7 @@ template <typename MediaType>
 		ImageRoundRadius radius,
 		bool spoiler) {
 	const auto photo = media->owner();
-	const auto counted = CountCacheKey(photo, spoiler);
+	const auto counted = CountCacheKey(photo, radius, spoiler);
 	if (const auto small = media->image(PhotoSize::Small)) {
 		return { PreparePreviewImage(small, radius, spoiler), counted };
 	} else if (const auto thumbnail = media->image(PhotoSize::Thumbnail)) {
@@ -191,15 +203,15 @@ template <typename MediaType>
 	}
 	const auto allowedToDownload = media->autoLoadThumbnailAllowed(
 		item->history()->peer);
-	const auto spoilered = uint64(spoiler ? 1 : 0);
-	const auto cacheKey = allowedToDownload ? spoilered : counted;
+	const auto simple = SimpleCacheKey(radius, spoiler);
+	const auto cacheKey = allowedToDownload ? simple : counted;
 	if (allowedToDownload) {
 		media->owner()->load(PhotoSize::Small, item->fullId());
 	}
 	if (const auto blurred = media->thumbnailInline()) {
 		return { PreparePreviewImage(blurred, radius, spoiler), cacheKey };
 	}
-	return { QImage(), allowedToDownload ? spoilered : cacheKey };
+	return { QImage(), allowedToDownload ? simple : cacheKey };
 }
 
 [[nodiscard]] ItemPreviewImage PrepareFilePreviewImage(
@@ -210,7 +222,7 @@ template <typename MediaType>
 	Expects(media->owner()->hasThumbnail());
 
 	const auto document = media->owner();
-	const auto readyCacheKey = CountCacheKey(document, spoiler);
+	const auto readyCacheKey = CountCacheKey(document, radius, spoiler);
 	if (const auto thumbnail = media->thumbnail()) {
 		return {
 			PreparePreviewImage(thumbnail, radius, spoiler),
@@ -218,11 +230,11 @@ template <typename MediaType>
 		};
 	}
 	document->loadThumbnail(item->fullId());
-	const auto spoilered = uint64(spoiler ? 1 : 0);
+	const auto simple = SimpleCacheKey(radius, spoiler);
 	if (const auto blurred = media->thumbnailInline()) {
-		return { PreparePreviewImage(blurred, radius, spoiler), spoilered };
+		return { PreparePreviewImage(blurred, radius, spoiler), simple };
 	}
-	return { QImage(), spoilered };
+	return { QImage(), simple };
 }
 
 [[nodiscard]] QImage PutPlayIcon(QImage preview) {
@@ -274,13 +286,14 @@ template <typename MediaType>
 [[nodiscard]] ItemPreviewImage FindCachedPreview(
 		const std::vector<ItemPreviewImage> *existing,
 		not_null<MediaType*> data,
+		ImageRoundRadius radius,
 		bool spoiler) {
 	if (!existing) {
 		return {};
 	}
 	const auto i = ranges::find(
 		*existing,
-		CountCacheKey(data, spoiler),
+		CountCacheKey(data, radius, spoiler),
 		&ItemPreviewImage::cacheKey);
 	return (i != end(*existing)) ? *i : ItemPreviewImage();
 }
@@ -443,27 +456,55 @@ Invoice ComputeInvoiceData(
 	return result;
 }
 
-Call ComputeCallData(const MTPDmessageActionPhoneCall &call) {
+Call ComputeCallData(
+		not_null<Session*> owner,
+		const MTPDmessageActionPhoneCall &call) {
 	auto result = Call();
-	result.finishReason = [&] {
+	result.state = [&] {
 		if (const auto reason = call.vreason()) {
-			switch (reason->type()) {
-			case mtpc_phoneCallDiscardReasonBusy:
-				return CallFinishReason::Busy;
-			case mtpc_phoneCallDiscardReasonDisconnect:
-				return CallFinishReason::Disconnected;
-			case mtpc_phoneCallDiscardReasonHangup:
-				return CallFinishReason::Hangup;
-			case mtpc_phoneCallDiscardReasonMissed:
-				return CallFinishReason::Missed;
-			}
+			return reason->match([](const MTPDphoneCallDiscardReasonBusy &) {
+				return CallState::Busy;
+			}, [](const MTPDphoneCallDiscardReasonDisconnect &) {
+				return CallState::Disconnected;
+			}, [](const MTPDphoneCallDiscardReasonHangup &) {
+				return CallState::Hangup;
+			}, [](const MTPDphoneCallDiscardReasonMissed &) {
+				return CallState::Missed;
+			}, [](const MTPDphoneCallDiscardReasonMigrateConferenceCall &) {
+				return CallState::MigrateConferenceCall;
+			});
 			Unexpected("Call reason type.");
 		}
-		return CallFinishReason::Hangup;
+		return CallState::Hangup;
 	}();
 	result.duration = call.vduration().value_or_empty();
 	result.video = call.is_video();
 	return result;
+}
+
+Call ComputeCallData(
+		not_null<Session*> owner,
+		const MTPDmessageActionConferenceCall &call) {
+	auto participants = std::vector<not_null<PeerData*>>();
+	if (const auto list = call.vother_participants()) {
+		participants.reserve(list->v.size());
+		for (const auto &participant : list->v) {
+			participants.push_back(owner->peer(peerFromMTP(participant)));
+		}
+	}
+	return {
+		.otherParticipants = std::move(participants),
+		.conferenceId = call.vcall_id().v,
+		.duration = call.vduration().value_or_empty(),
+		.state = (call.vduration().value_or_empty()
+			? CallState::Hangup
+			: call.is_missed()
+			? CallState::Missed
+			: call.is_active()
+			? CallState::Active
+			: CallState::Invitation),
+		.video = call.is_video(),
+	};
 }
 
 GiveawayStart ComputeGiveawayStartData(
@@ -550,6 +591,14 @@ not_null<HistoryItem*> Media::parent() const {
 
 DocumentData *Media::document() const {
 	return nullptr;
+}
+
+PhotoData *Media::videoCover() const {
+	return nullptr;
+}
+
+TimeId Media::videoTimestamp() const {
+	return 0;
 }
 
 bool Media::hasQualitiesList() const {
@@ -847,13 +896,17 @@ ItemPreview MediaPhoto::toPreview(ToPreviewOptions options) const {
 	}
 	auto images = std::vector<ItemPreviewImage>();
 	auto context = std::any();
-	if (auto found = FindCachedPreview(options.existing, _photo, _spoiler)) {
+	const auto radius = _chat
+		? ImageRoundRadius::Ellipse
+		: ImageRoundRadius::Small;
+	if (auto found = FindCachedPreview(
+			options.existing,
+			_photo,
+			radius,
+			_spoiler)) {
 		images.push_back(std::move(found));
 	} else {
 		const auto media = _photo->createMediaView();
-		const auto radius = _chat
-			? ImageRoundRadius::Ellipse
-			: ImageRoundRadius::Small;
 		if (auto prepared = PreparePhotoPreview(
 				parent(),
 				media,
@@ -968,17 +1021,16 @@ std::unique_ptr<HistoryView::Media> MediaPhoto::createView(
 MediaFile::MediaFile(
 	not_null<HistoryItem*> parent,
 	not_null<DocumentData*> document,
-	bool skipPremiumEffect,
-	bool hasQualitiesList,
-	bool spoiler,
-	crl::time ttlSeconds)
+	Args &&args)
 : Media(parent)
 , _document(document)
+, _videoCover(args.videoCover)
+, _ttlSeconds(args.ttlSeconds)
 , _emoji(document->sticker() ? document->sticker()->alt : QString())
-, _skipPremiumEffect(skipPremiumEffect)
-, _hasQualitiesList(hasQualitiesList)
-, _spoiler(spoiler)
-, _ttlSeconds(ttlSeconds) {
+, _videoTimestamp(args.videoTimestamp)
+, _skipPremiumEffect(args.skipPremiumEffect)
+, _hasQualitiesList(args.hasQualitiesList)
+, _spoiler(args.spoiler) {
 	parent->history()->owner().registerDocumentItem(_document, parent);
 
 	if (!_emoji.isEmpty()) {
@@ -1002,17 +1054,26 @@ MediaFile::~MediaFile() {
 }
 
 std::unique_ptr<Media> MediaFile::clone(not_null<HistoryItem*> parent) {
-	return std::make_unique<MediaFile>(
-		parent,
-		_document,
-		!_document->session().premium(),
-		_hasQualitiesList,
-		_spoiler,
-		_ttlSeconds);
+	return std::make_unique<MediaFile>(parent, _document, MediaFile::Args{
+		.ttlSeconds = _ttlSeconds,
+		.videoCover = _videoCover,
+		.videoTimestamp = _videoTimestamp,
+		.hasQualitiesList = _hasQualitiesList,
+		.skipPremiumEffect = !_document->session().premium(),
+		.spoiler = _spoiler,
+	});
 }
 
 DocumentData *MediaFile::document() const {
 	return _document;
+}
+
+PhotoData *MediaFile::videoCover() const {
+	return _videoCover;
+}
+
+TimeId MediaFile::videoTimestamp() const {
+	return _videoTimestamp;
 }
 
 bool MediaFile::hasQualitiesList() const {
@@ -1078,24 +1139,30 @@ ItemPreview MediaFile::toPreview(ToPreviewOptions options) const {
 			return toGroupPreview(group->items, options);
 		}
 	}
-	if (const auto sticker = _document->sticker()) {
+	if (_document->sticker()) {
 		return Media::toPreview(options);
 	}
 	auto images = std::vector<ItemPreviewImage>();
 	auto context = std::any();
 	const auto existing = options.existing;
-	if (auto found = FindCachedPreview(existing, _document, _spoiler)) {
+	const auto spoilered = _spoiler
+		|| (_document->isVideoMessage() && ttlSeconds());
+	const auto radius = _document->isVideoMessage()
+		? ImageRoundRadius::Ellipse
+		: ImageRoundRadius::Small;
+	if (auto found = FindCachedPreview(
+			existing,
+			_document,
+			radius,
+			spoilered)) {
 		images.push_back(std::move(found));
 	} else if (TryFilePreview(_document)) {
 		const auto media = _document->createMediaView();
-		const auto radius = _document->isVideoMessage()
-			? ImageRoundRadius::Ellipse
-			: ImageRoundRadius::Small;
 		if (auto prepared = PrepareFilePreview(
 				parent(),
 				media,
 				radius,
-				_spoiler)
+				spoilered)
 			; prepared || !prepared.cacheKey) {
 			images.push_back(std::move(prepared));
 			if (!prepared.cacheKey) {
@@ -1139,7 +1206,7 @@ ItemPreview MediaFile::toPreview(ToPreviewOptions options) const {
 }
 
 TextWithEntities MediaFile::notificationText() const {
-	if (const auto sticker = _document->sticker()) {
+	if (_document->sticker()) {
 		const auto text = _emoji.isEmpty()
 			? tr::lng_in_dlg_sticker(tr::now)
 			: tr::lng_in_dlg_sticker_emoji(tr::now, lt_emoji, _emoji);
@@ -1171,7 +1238,7 @@ TextWithEntities MediaFile::notificationText() const {
 }
 
 QString MediaFile::pinnedTextSubstring() const {
-	if (const auto sticker = _document->sticker()) {
+	if (_document->sticker()) {
 		if (!_emoji.isEmpty()) {
 			return tr::lng_action_pinned_media_emoji_sticker(
 				tr::now,
@@ -1285,7 +1352,11 @@ bool MediaFile::updateSentMedia(const MTPMessageMedia &media) {
 			"or with ttl_seconds in updateSentMedia()"));
 		return false;
 	}
-	parent()->history()->owner().documentConvert(_document, *content);
+	const auto owner = &parent()->history()->owner();
+	owner->documentConvert(_document, *content);
+	if (const auto cover = _videoCover ? data.vvideo_cover() : nullptr) {
+		owner->photoConvert(_videoCover, *cover);
+	}
 	return true;
 }
 
@@ -1627,11 +1698,28 @@ std::unique_ptr<HistoryView::Media> MediaLocation::createView(
 MediaCall::MediaCall(not_null<HistoryItem*> parent, const Call &call)
 : Media(parent)
 , _call(call) {
-	parent->history()->owner().registerCallItem(parent);
+	const auto peer = parent->history()->peer;
+	peer->owner().registerCallItem(parent);
+	if (const auto user = _call.conferenceId ? peer->asUser() : nullptr) {
+		Core::App().calls().registerConferenceInvite(
+			_call.conferenceId,
+			user,
+			parent->id,
+			!parent->out());
+	}
 }
 
 MediaCall::~MediaCall() {
-	parent()->history()->owner().unregisterCallItem(parent());
+	const auto parent = this->parent();
+	const auto peer = parent->history()->peer;
+	peer->owner().unregisterCallItem(parent);
+	if (const auto user = _call.conferenceId ? peer->asUser() : nullptr) {
+		Core::App().calls().unregisterConferenceInvite(
+			_call.conferenceId,
+			user,
+			parent->id,
+			!parent->out());
+	}
 }
 
 std::unique_ptr<Media> MediaCall::clone(not_null<HistoryItem*> parent) {
@@ -1643,7 +1731,8 @@ const Call *MediaCall::call() const {
 }
 
 TextWithEntities MediaCall::notificationText() const {
-	auto result = Text(parent(), _call.finishReason, _call.video);
+	const auto conference = (_call.conferenceId != 0);
+	auto result = Text(parent(), _call.state, conference, _call.video);
 	if (_call.duration > 0) {
 		result = tr::lng_call_type_and_duration(
 			tr::now,
@@ -1684,26 +1773,39 @@ std::unique_ptr<HistoryView::Media> MediaCall::createView(
 
 QString MediaCall::Text(
 		not_null<HistoryItem*> item,
-		CallFinishReason reason,
+		CallState state,
+		bool conference,
 		bool video) {
-	if (item->out()) {
-		return ((reason == CallFinishReason::Missed)
-			? (video
+	if (state == CallState::Invitation) {
+		return tr::lng_call_invitation(tr::now);
+	} else if (state == CallState::Active) {
+		return tr::lng_call_ongoing(tr::now);
+	} else if (item->out()) {
+		return ((state == CallState::Missed)
+			? (conference
+				? tr::lng_call_group_declined
+				: video
 				? tr::lng_call_video_cancelled
 				: tr::lng_call_cancelled)
-			: (video
+			: (conference
+				? tr::lng_call_group_outgoing
+				: video
 				? tr::lng_call_video_outgoing
 				: tr::lng_call_outgoing))(tr::now);
-	} else if (reason == CallFinishReason::Missed) {
-		return (video
+	} else if (state == CallState::Missed) {
+		return (conference
+			? tr::lng_call_group_missed
+			: video
 			? tr::lng_call_video_missed
 			: tr::lng_call_missed)(tr::now);
-	} else if (reason == CallFinishReason::Busy) {
+	} else if (state == CallState::Busy) {
 		return (video
 			? tr::lng_call_video_declined
 			: tr::lng_call_declined)(tr::now);
 	}
-	return (video
+	return (conference
+		? tr::lng_call_group_incoming
+		: video
 		? tr::lng_call_video_incoming
 		: tr::lng_call_incoming)(tr::now);
 }
@@ -1788,13 +1890,17 @@ ItemPreview MediaWebPage::toPreview(ToPreviewOptions options) const {
 		|| _page->type == WebPageType::Video
 		|| _page->type == WebPageType::Document;
 	if (pageTypeWithPreview || !_page->collage.items.empty()) {
-		if (auto found = FindCachedPreview(options.existing, _page, false)) {
+		const auto radius = ImageRoundRadius::Small;
+		if (auto found = FindCachedPreview(
+				options.existing,
+				_page,
+				radius,
+				false)) {
 			return { .text = caption, .images = { std::move(found) } };
 		}
 		auto context = std::any();
 		auto images = std::vector<ItemPreviewImage>();
 		auto prepared = ItemPreviewImage();
-		const auto radius = ImageRoundRadius::Small;
 		if (const auto photo = MediaWebPage::photo()) {
 			const auto media = photo->createMediaView();
 			prepared = PreparePhotoPreview(parent(), media, radius, false);
@@ -2042,10 +2148,18 @@ ItemPreview MediaInvoice::toPreview(ToPreviewOptions options) const {
 		if (!photo && !document) {
 			continue;
 		} else if (images.size() < kMaxPreviewImages) {
-			auto found = photo
-				? FindCachedPreview(existing, not_null(photo), spoiler)
-				: FindCachedPreview(existing, not_null(document), spoiler);
 			const auto radius = ImageRoundRadius::Small;
+			auto found = photo
+				? FindCachedPreview(
+					existing,
+					not_null(photo),
+					radius,
+					spoiler)
+				: FindCachedPreview(
+					existing,
+					not_null(document),
+					radius,
+					spoiler);
 			if (found) {
 				images.push_back(std::move(found));
 			} else if (photo) {
@@ -2375,13 +2489,13 @@ std::unique_ptr<HistoryView::Media> MediaGiftBox::createView(
 		not_null<HistoryView::Element*> message,
 		not_null<HistoryItem*> realParent,
 		HistoryView::Element *replacing) {
-	if (const auto raw = _data.unique.get()) {
+	if (const auto &unique = _data.unique) {
 		return std::make_unique<HistoryView::MediaGeneric>(
 			message,
-			HistoryView::GenerateUniqueGiftMedia(message, replacing, raw),
+			HistoryView::GenerateUniqueGiftMedia(message, replacing, unique),
 			HistoryView::MediaGenericDescriptor{
 				.maxWidth = st::msgServiceGiftBoxSize.width(),
-				.paintBg = HistoryView::UniqueGiftBg(message, raw),
+				.paintBg = HistoryView::UniqueGiftBg(message, unique),
 				.service = true,
 			});
 	}

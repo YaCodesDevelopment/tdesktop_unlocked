@@ -16,7 +16,7 @@ struct ConfigFields {
 
 	int chatSizeMax = 200;
 	int megagroupSizeMax = 10000;
-	int forwardedCountMax = 1000000;
+	int forwardedCountMax = 100;
 	int onlineUpdatePeriod = 120000;
 	int offlineBlurTimeout = 5000;
 	int offlineIdleTimeout = 30000;

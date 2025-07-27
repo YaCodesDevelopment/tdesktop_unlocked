@@ -1010,7 +1010,7 @@ void Widget::setGeometryWithTopMoved(
 	_topDelta = topDelta;
 	bool willBeResized = (size() != newGeometry.size());
 	if (geometry() != newGeometry) {
-		auto weak = Ui::MakeWeak(this);
+		auto weak = base::make_weak(this);
 		setGeometry(newGeometry);
 		if (!weak) {
 			return;
@@ -1748,7 +1748,7 @@ void Widget::updateSuggestions(anim::type animated) {
 			_suggestions = nullptr;
 			_hidingSuggestions.clear();
 			storiesExplicitCollapse();
-			updateStoriesVisibility();
+			updateControlsVisibility();
 			_scroll->show();
 		}
 	} else if (suggest && !_suggestions) {
